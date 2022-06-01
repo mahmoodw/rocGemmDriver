@@ -50,15 +50,15 @@ void BenchGemmStridedBatched(const Arguments& arg, std::promise<std::pair<double
     rocblas_stride stride_c    = arg.stride_c;
     rocblas_int batch_count = arg.batch_count;
 
-    rocblas_operation transA = char2rocblas_operation(arg.transA);
-    rocblas_operation transB = char2rocblas_operation(arg.transB);
+    driver_operation transA = char2driver_operation(arg.transA);
+    driver_operation transB = char2driver_operation(arg.transB);
 
     rocblas_local_handle handle;
 
-    rocblas_int A_row = transA == rocblas_operation_none ? M : K;
-    rocblas_int A_col = transA == rocblas_operation_none ? K : M;
-    rocblas_int B_row = transB == rocblas_operation_none ? K : N;
-    rocblas_int B_col = transB == rocblas_operation_none ? N : K;
+    rocblas_int A_row = transA == driver_operation_none ? M : K;
+    rocblas_int A_col = transA == driver_operation_none ? K : M;
+    rocblas_int B_row = transB == driver_operation_none ? K : N;
+    rocblas_int B_col = transB == driver_operation_none ? N : K;
 
     // Early exit
     if(!M || !N || !batch_count)
@@ -83,9 +83,9 @@ void BenchGemmStridedBatched(const Arguments& arg, std::promise<std::pair<double
     double rocblas_error = 0.0;
 
     size_t size_one_a
-        = transA == rocblas_operation_none ? size_t(K) * size_t(lda) : size_t(M) * size_t(lda);
+        = transA == driver_operation_none ? size_t(K) * size_t(lda) : size_t(M) * size_t(lda);
     size_t size_one_b
-        = transB == rocblas_operation_none ? size_t(N) * size_t(ldb) : size_t(K) * size_t(ldb);
+        = transB == driver_operation_none ? size_t(N) * size_t(ldb) : size_t(K) * size_t(ldb);
     size_t size_one_c = N * ldc;
 
     size_t size_A = size_one_a + size_t(stride_a) * size_t(batch_count - 1);
@@ -261,10 +261,10 @@ void BenchGemmStridedBatched(const Arguments& arg, std::promise<std::pair<double
 #ifdef VALIDATE
     if(arg.norm_check)
     {
-        // ROCBLAS rocblas_pointer_mode_host
-        CHECK_ROCBLAS_ERROR(rocblas_set_pointer_mode(handle, rocblas_pointer_mode_host));
+        // ROCBLAS DRIVER_POINTER_MODE_HOST
+        CHECK_DRIVER_ERROR(driver_set_pointer_mode(handle, DRIVER_POINTER_MODE_HOST));
 
-        CHECK_ROCBLAS_ERROR(rocblas_gemm_strided_batched<T>(handle,
+        CHECK_DRIVER_ERROR(driver_gemm_strided_batched<T>(handle,
                                                             transA,
                                                             transB,
                                                             M,
@@ -284,14 +284,14 @@ void BenchGemmStridedBatched(const Arguments& arg, std::promise<std::pair<double
                                                             batch_count));
         CHECK_HIP_ERROR(hipMemcpy(hC_1, dC, sizeof(T) * size_C, hipMemcpyDeviceToHost));
 
-        // ROCBLAS rocblas_pointer_mode_device
-        CHECK_ROCBLAS_ERROR(rocblas_set_pointer_mode(handle, rocblas_pointer_mode_device));
+        // ROCBLAS DRIVER_POINTER_MODE_DEVICE
+        CHECK_DRIVER_ERROR(driver_set_pointer_mode(handle, DRIVER_POINTER_MODE_DEVICE));
 
         CHECK_HIP_ERROR(hipMemcpy(dC, hC, sizeof(T) * size_C, hipMemcpyHostToDevice));
         CHECK_HIP_ERROR(hipMemcpy(d_alpha, &h_alpha, sizeof(T), hipMemcpyHostToDevice));
         CHECK_HIP_ERROR(hipMemcpy(d_beta, &h_beta, sizeof(T), hipMemcpyHostToDevice));
 
-        CHECK_ROCBLAS_ERROR(rocblas_gemm_strided_batched<T>(handle,
+        CHECK_DRIVER_ERROR(driver_gemm_strided_batched<T>(handle,
                                                             transA,
                                                             transB,
                                                             M,
@@ -321,8 +321,8 @@ void BenchGemmStridedBatched(const Arguments& arg, std::promise<std::pair<double
             cpu_time_used = get_time_us();
             for(rocblas_int i = 0; i < batch_count; i++)
             {
-                blis_gemm<T>(transA,
-                            transB,
+                blis_gemm<T>(char2rocblas_operation(arg.transA),
+                            char2rocblas_operation(arg.transB),
                             M,
                             N,
                             K,
@@ -392,11 +392,11 @@ void BenchGemmStridedBatched(const Arguments& arg, std::promise<std::pair<double
     float kernel_time_iter = 0.0f;
     double host_time_iter = 0.0f;
 
-    CHECK_ROCBLAS_ERROR(rocblas_set_pointer_mode(handle, rocblas_pointer_mode_host));
+    CHECK_DRIVER_ERROR(driver_set_pointer_mode(handle, DRIVER_POINTER_MODE_HOST));
 
     for(int i = 0; i < number_cold_calls; i++)
     {
-        rocblas_gemm_strided_batched<T>(handle,
+        driver_gemm_strided_batched<T>(handle,
                                         transA,
                                         transB,
                                         M,
@@ -428,7 +428,7 @@ void BenchGemmStridedBatched(const Arguments& arg, std::promise<std::pair<double
             host_time_iter = get_time_us();
             hipEventRecord(start, NULL);
 
-            rocblas_gemm_strided_batched<T>(handle,
+            driver_gemm_strided_batched<T>(handle,
                                         transA,
                                         transB,
                                         M,
@@ -466,7 +466,7 @@ void BenchGemmStridedBatched(const Arguments& arg, std::promise<std::pair<double
         hipEventRecord(start, NULL);
         for(int i = 0; i < number_hot_calls; i++)
         {
-            rocblas_gemm_strided_batched<T>(handle,
+            driver_gemm_strided_batched<T>(handle,
                                         transA,
                                         transB,
                                         M,
@@ -562,26 +562,26 @@ void BenchGemmEx(Arguments& arg, std::promise<std::pair<double,double>> promise)
         hipGetDevice(&deviceId);
 
     rocblas_local_handle handle;
-    auto                 transA = char2rocblas_operation(arg.transA);
-    auto                 transB = char2rocblas_operation(arg.transB);
+    auto                 transA = char2driver_operation(arg.transA);
+    auto                 transB = char2driver_operation(arg.transB);
     auto                 M = arg.M, N = arg.N, K = arg.K;
     auto                 lda = arg.lda, ldb = arg.ldb, ldc = arg.ldc, ldd = arg.ldd;
-    auto                 A_row = transA == rocblas_operation_none ? M : K;
-    auto                 A_col = transA == rocblas_operation_none ? K : M;
-    auto                 B_row = transB == rocblas_operation_none ? K : N;
-    auto                 B_col = transB == rocblas_operation_none ? N : K;
+    auto                 A_row = transA == driver_operation_none ? M : K;
+    auto                 A_col = transA == driver_operation_none ? K : M;
+    auto                 B_row = transB == driver_operation_none ? K : N;
+    auto                 B_col = transB == driver_operation_none ? N : K;
 
     // size checking is only needed for int8x4
     bool pack_to_int8x4 = arg.flags & rocblas_gemm_flags_pack_int8x4;
     bool int8_invalid   = (pack_to_int8x4 && std::is_same<Ti, int8_t>{}
-                         && (K % 4 != 0 || (transA != rocblas_operation_none && lda % 4 != 0)
-                             || (transB == rocblas_operation_none && ldb % 4 != 0)));
+                         && (K % 4 != 0 || (transA != driver_operation_none && lda % 4 != 0)
+                             || (transB == driver_operation_none && ldb % 4 != 0)));
 
     // check for invalid sizes
     if(M < 0 || N < 0 || K < 0 || lda < A_row || ldb < B_row || ldc < M || (ldd < M && !c_equals_d)
        || (std::is_same<Ti, int8_t> {}
-           && (K % 4 != 0 || (transA != rocblas_operation_none && lda % 4 != 0)
-               || (transB == rocblas_operation_none && ldb % 4 != 0))))
+           && (K % 4 != 0 || (transA != driver_operation_none && lda % 4 != 0)
+               || (transB == driver_operation_none && ldb % 4 != 0))))
     {
         rocblas_cout << "Invalid sizes...exiting" << std::endl;
         exit(1);
@@ -605,6 +605,11 @@ void BenchGemmEx(Arguments& arg, std::promise<std::pair<double,double>> promise)
     device_vector<To> dD(size_D);
     device_vector<Tc> d_alpha_Tc(1);
     device_vector<Tc> d_beta_Tc(1);
+
+    To* output_pointer = c_equals_d ? dC : dD;
+    rocblas_datatype output_type = c_equals_d ? arg.c_type : arg.d_type;
+    rocblas_int ld_output = c_equals_d ? ldc : ldd;
+
     if(!dA || !dB || !dC || !dD || !d_alpha_Tc || !d_beta_Tc)
     {
         CHECK_HIP_ERROR(hipErrorOutOfMemory);
@@ -749,7 +754,7 @@ void BenchGemmEx(Arguments& arg, std::promise<std::pair<double,double>> promise)
             const rocblas_half negative_two(-2.0);
             if(M >= 2 && N >= 2 && K >= 2)
             {
-                if(transA == rocblas_operation_none)
+                if(transA == driver_operation_none)
                 {
                     hA[0]   = Ti(ieee_half_near_max);
                     hA[lda] = Ti(ieee_half_near_max);
@@ -759,7 +764,7 @@ void BenchGemmEx(Arguments& arg, std::promise<std::pair<double,double>> promise)
                     hA[0] = Ti(ieee_half_near_max);
                     hA[1] = Ti(ieee_half_near_max);
                 }
-                if(transB == rocblas_operation_none)
+                if(transB == driver_operation_none)
                 {
                     for(int j = 0; j < N; j++)
                     {
@@ -804,7 +809,7 @@ void BenchGemmEx(Arguments& arg, std::promise<std::pair<double,double>> promise)
     // copy data from CPU to device
     // do packing only when pack_to_int8x4=true (int8x4)
     // if int8x4 and A not transposed and valid case, pack A
-    if(std::is_same<Ti, int8_t>{} && transA == rocblas_operation_none && pack_to_int8x4)
+    if(std::is_same<Ti, int8_t>{} && transA == driver_operation_none && pack_to_int8x4)
     {
         host_vector<Ti> hA_packed(hA);
 
@@ -818,7 +823,7 @@ void BenchGemmEx(Arguments& arg, std::promise<std::pair<double,double>> promise)
 
     // do packing only when pack_to_int8x4=true (int8x4)
     // if int8x4 and B transposed and valid case, pack B
-    if(std::is_same<Ti, int8_t>{} && transB != rocblas_operation_none && pack_to_int8x4)
+    if(std::is_same<Ti, int8_t>{} && transB != driver_operation_none && pack_to_int8x4)
     {
         host_vector<Ti> hB_packed(hB);
 
@@ -837,10 +842,10 @@ void BenchGemmEx(Arguments& arg, std::promise<std::pair<double,double>> promise)
 #ifdef VALIDATE
     if(arg.norm_check)
     {
-        // ROCBLAS rocblas_pointer_mode_host
-        CHECK_ROCBLAS_ERROR(rocblas_set_pointer_mode(handle, rocblas_pointer_mode_host));
+        // ROCBLAS DRIVER_POINTER_MODE_HOST
+        CHECK_DRIVER_ERROR(driver_set_pointer_mode(handle, DRIVER_POINTER_MODE_HOST));
 
-        CHECK_ROCBLAS_ERROR(rocblas_gemm_ex(handle,
+        CHECK_DRIVER_ERROR(driver_gemm_ex(handle,
                                             transA,
                                             transB,
                                             M,
@@ -848,30 +853,35 @@ void BenchGemmEx(Arguments& arg, std::promise<std::pair<double,double>> promise)
                                             K,
                                             &h_alpha_Tc,
                                             dA,
-                                            arg.a_type,
+                                            driver_type(arg.a_type),
                                             lda,
                                             dB,
-                                            arg.b_type,
+                                            driver_type(arg.b_type),
                                             ldb,
                                             &h_beta_Tc,
                                             dC,
-                                            arg.c_type,
+                                            driver_type(arg.c_type),
                                             ldc,
-                                            c_equals_d ? dC : dD,
-                                            c_equals_d ? arg.c_type : arg.d_type,
-                                            c_equals_d ? ldc : ldd,
-                                            arg.compute_type,
-                                            algo,
+#ifndef HIPBLAS
+                                            output_pointer,
+                                            driver_type(output_type),
+                                            ld_output,
+                                            driver_type(arg.compute_type),
+                                            driver_algo(algo),
                                             solution_index,
-                                            flags));                     
+                                            flags));
+#else
+                                            driver_type(arg.compute_type),
+                                            driver_algo(algo)));
+#endif
 
         if(c_equals_d)
             CHECK_HIP_ERROR(hipMemcpy(hC_1, dC, sizeof(To) * size_C, hipMemcpyDeviceToHost));
         else
             CHECK_HIP_ERROR(hipMemcpy(hD_1, dD, sizeof(To) * size_D, hipMemcpyDeviceToHost));
 
-        // ROCBLAS rocblas_pointer_mode_device
-        CHECK_ROCBLAS_ERROR(rocblas_set_pointer_mode(handle, rocblas_pointer_mode_device));
+        // ROCBLAS DRIVER_POINTER_MODE_DEVICE
+        CHECK_DRIVER_ERROR(driver_set_pointer_mode(handle, DRIVER_POINTER_MODE_DEVICE));
         CHECK_HIP_ERROR(hipMemcpy(d_alpha_Tc, &h_alpha_Tc, sizeof(Tc), hipMemcpyHostToDevice));
         CHECK_HIP_ERROR(hipMemcpy(d_beta_Tc, &h_beta_Tc, sizeof(Tc), hipMemcpyHostToDevice));
 
@@ -880,7 +890,7 @@ void BenchGemmEx(Arguments& arg, std::promise<std::pair<double,double>> promise)
         else
             CHECK_HIP_ERROR(hipMemcpy(dD, hD_gold, sizeof(To) * size_D, hipMemcpyHostToDevice));
 
-        CHECK_ROCBLAS_ERROR(rocblas_gemm_ex(handle,
+        CHECK_DRIVER_ERROR(driver_gemm_ex(handle,
                                             transA,
                                             transB,
                                             M,
@@ -888,22 +898,27 @@ void BenchGemmEx(Arguments& arg, std::promise<std::pair<double,double>> promise)
                                             K,
                                             d_alpha_Tc,
                                             dA,
-                                            arg.a_type,
+                                            driver_type(arg.a_type),
                                             lda,
                                             dB,
-                                            arg.b_type,
+                                            driver_type(arg.b_type),
                                             ldb,
                                             d_beta_Tc,
                                             dC,
-                                            arg.c_type,
+                                            driver_type(arg.c_type),
                                             ldc,
-                                            c_equals_d ? dC : dD,
-                                            c_equals_d ? arg.c_type : arg.d_type,
-                                            c_equals_d ? ldc : ldd,
-                                            arg.compute_type,
-                                            algo,
+#ifndef HIPBLAS
+                                            output_pointer,
+                                            driver_type(output_type),
+                                            ld_output,
+                                            driver_type(arg.compute_type),
+                                            driver_algo(algo),
                                             solution_index,
                                             flags));
+#else
+                                            driver_type(arg.compute_type),
+                                            driver_algo(algo)));
+#endif
 
         if(multi_device > 1 && deviceId!=0)
         {
@@ -926,7 +941,7 @@ void BenchGemmEx(Arguments& arg, std::promise<std::pair<double,double>> promise)
             }
             cpu_time_used = get_time_us();
             blis_gemm<Ti,To,Tc>(
-                transA, transB, M, N, K, h_alpha_Tc, hA, lda, hB, ldb, h_beta_Tc, c_equals_d ? hC_gold : hD_gold, c_equals_d ? ldc : ldd);
+                char2rocblas_operation(arg.transA), char2rocblas_operation(arg.transB), M, N, K, h_alpha_Tc, hA, lda, hB, ldb, h_beta_Tc, c_equals_d ? hC_gold : hD_gold, c_equals_d ? ldc : ldd);
             //if C does not equal D check if C changed
 
             cpu_time_used = get_time_us() - cpu_time_used;
@@ -1018,15 +1033,12 @@ void BenchGemmEx(Arguments& arg, std::promise<std::pair<double,double>> promise)
     host_time        = 0.0;
     float kernel_time_iter = 0.0f;
     double host_time_iter = 0.0f;
-    To* output_pointer = c_equals_d ? dC : dD;
-    rocblas_datatype output_type = c_equals_d ? arg.c_type : arg.d_type;
-    rocblas_int ld_output = c_equals_d ? ldc : ldd;
 
-    CHECK_ROCBLAS_ERROR(rocblas_set_pointer_mode(handle, rocblas_pointer_mode_host));
+    CHECK_DRIVER_ERROR(driver_set_pointer_mode(handle, DRIVER_POINTER_MODE_HOST));
 
     for(int i = 0; i < number_cold_calls; i++)
     {
-        CHECK_ROCBLAS_ERROR(rocblas_gemm_ex(handle,
+        CHECK_DRIVER_ERROR(driver_gemm_ex(handle,
                                             transA,
                                             transB,
                                             M,
@@ -1034,22 +1046,27 @@ void BenchGemmEx(Arguments& arg, std::promise<std::pair<double,double>> promise)
                                             K,
                                             &h_alpha_Tc,
                                             dA,
-                                            arg.a_type,
+                                            driver_type(arg.a_type),
                                             lda,
                                             dB,
-                                            arg.b_type,
+                                            driver_type(arg.b_type),
                                             ldb,
                                             &h_beta_Tc,
                                             dC,
-                                            arg.c_type,
+                                            driver_type(arg.c_type),
                                             ldc,
+#ifndef HIPBLAS
                                             output_pointer,
-                                            output_type,
+                                            driver_type(output_type),
                                             ld_output,
-                                            arg.compute_type,
-                                            algo,
+                                            driver_type(arg.compute_type),
+                                            driver_algo(algo),
                                             solution_index,
                                             flags));
+#else
+                                            driver_type(arg.compute_type),
+                                            driver_algo(algo)));
+#endif
     }
 
     if(time_each_iter)
@@ -1064,7 +1081,7 @@ void BenchGemmEx(Arguments& arg, std::promise<std::pair<double,double>> promise)
             host_time_iter = get_time_us();
             hipEventRecord(start[numEvents-1], NULL);
 
-            rocblas_gemm_ex(handle,
+            driver_gemm_ex(handle,
                             transA,
                             transB,
                             M,
@@ -1072,22 +1089,27 @@ void BenchGemmEx(Arguments& arg, std::promise<std::pair<double,double>> promise)
                             K,
                             &h_alpha_Tc,
                             dA,
-                            arg.a_type,
+                            driver_type(arg.a_type),
                             lda,
                             dB,
-                            arg.b_type,
+                            driver_type(arg.b_type),
                             ldb,
                             &h_beta_Tc,
                             dC,
-                            arg.c_type,
+                            driver_type(arg.c_type),
                             ldc,
-                            output_pointer,
-                            output_type,
-                            ld_output,
-                            arg.compute_type,
-                            algo,
-                            solution_index,
-                            flags);
+#ifndef HIPBLAS
+                                            output_pointer,
+                                            driver_type(output_type),
+                                            ld_output,
+                                            driver_type(arg.compute_type),
+                                            driver_algo(algo),
+                                            solution_index,
+                                            flags);
+#else
+                                            driver_type(arg.compute_type),
+                                            driver_algo(algo));
+#endif
 
             hipEventRecord(stop[numEvents-1], NULL);
             hipEventSynchronize(stop[numEvents-1]);
@@ -1109,7 +1131,7 @@ void BenchGemmEx(Arguments& arg, std::promise<std::pair<double,double>> promise)
         for(int i = 0; i < number_hot_calls; i++)
         {
             ROCBLAS_INVOKE_START_STOP_EVENTS(handle, tensile_timing ? start[i]: nullptr, tensile_timing ? stop[i] : nullptr,
-            rocblas_gemm_ex(handle,
+            driver_gemm_ex(handle,
                             transA,
                             transB,
                             M,
@@ -1117,22 +1139,27 @@ void BenchGemmEx(Arguments& arg, std::promise<std::pair<double,double>> promise)
                             K,
                             &h_alpha_Tc,
                             dA,
-                            arg.a_type,
+                            driver_type(arg.a_type),
                             lda,
                             dB,
-                            arg.b_type,
+                            driver_type(arg.b_type),
                             ldb,
                             &h_beta_Tc,
                             dC,
-                            arg.c_type,
+                            driver_type(arg.c_type),
                             ldc,
-                            output_pointer,
-                            output_type,
-                            ld_output,
-                            arg.compute_type,
-                            algo,
-                            solution_index,
-                            flags));
+#ifndef HIPBLAS
+                                            output_pointer,
+                                            driver_type(output_type),
+                                            ld_output,
+                                            driver_type(arg.compute_type),
+                                            driver_algo(algo),
+                                            solution_index,
+                                            flags));
+#else
+                                            driver_type(arg.compute_type),
+                                            driver_algo(algo)));
+#endif
         }
 
         hipEventRecord(stop[numEvents-1], NULL);
@@ -1167,7 +1194,7 @@ void BenchGemmEx(Arguments& arg, std::promise<std::pair<double,double>> promise)
         {
             msg << "Device " << deviceId << std::endl
             << "transA,transB,M,N,K,alpha,lda,ldb,beta,ldc,rocblas-Gflops,rocblas-Gflops(using host_time),host_time(us),kernel_time(us)" 
-            << ",tensile_time(us)" << std::endl << rocblas2char_operation(transA) << "," << rocblas2char_operation(transB) << ","
+            << ",tensile_time(us)" << std::endl << arg.transA << "," << arg.transB << ","
             << M << "," << N << "," << K << "," << arg.alpha << "," << lda << "," << ldb
             << "," << arg.beta << "," << ldc << "," << rocblas_gflops << "," << host_gflops << ","
             << host_time / number_hot_calls << "," << kernel_time/number_hot_calls*1000 << ","
@@ -1175,7 +1202,7 @@ void BenchGemmEx(Arguments& arg, std::promise<std::pair<double,double>> promise)
         }
         else
             msg << "transA,transB,M,N,K,alpha,lda,ldb,beta,ldc,rocblas-Gflops,host_time(us),kernel_time(us)" 
-            << ",tensile_time(us)" << std::endl << rocblas2char_operation(transA) << "," << rocblas2char_operation(transB) << ","
+            << ",tensile_time(us)" << std::endl << arg.transA << "," << arg.transB << ","
             << M << "," << N << "," << K << "," << arg.alpha << "," << lda << "," << ldb
             << "," << arg.beta << "," << ldc << "," << rocblas_gflops << ","
             << host_time / number_hot_calls << "," << kernel_time/number_hot_calls*1000 << ","
@@ -1187,14 +1214,14 @@ void BenchGemmEx(Arguments& arg, std::promise<std::pair<double,double>> promise)
         {
             msg << "Device " << deviceId << std::endl
             << "transA,transB,M,N,K,alpha,lda,ldb,beta,ldc,rocblas-Gflops,rocblas-Gflops(using host_time),host_time(us),kernel_time(us)"<< std::endl
-            << rocblas2char_operation(transA) << "," << rocblas2char_operation(transB) << ","
+            << arg.transA << "," << arg.transB << ","
             << M << "," << N << "," << K << "," << arg.alpha << "," << lda << "," << ldb
             << "," << arg.beta << "," << ldc << "," << rocblas_gflops << "," << host_gflops << ","
             << host_time / number_hot_calls << "," << kernel_time/number_hot_calls*1000 << std::endl;
         }
         else
             msg << "transA,transB,M,N,K,alpha,lda,ldb,beta,ldc,rocblas-Gflops,host_time(us),kernel_time(us)"<< std::endl
-                << rocblas2char_operation(transA) << "," << rocblas2char_operation(transB) << ","
+                << arg.transA << "," << arg.transB << ","
             << M << "," << N << "," << K << "," << arg.alpha << "," << lda << "," << ldb
             << "," << arg.beta << "," << ldc << "," << rocblas_gflops  << ","
             << host_time / number_hot_calls << "," << kernel_time/number_hot_calls*1000 << std::endl;
@@ -1212,8 +1239,8 @@ void BenchGemmEx(Arguments& arg, std::promise<std::pair<double,double>> promise)
 template <typename T>
 void BenchGemm(Arguments& arg, std::promise<std::pair<double,double>> promise)
 {
-    rocblas_operation transA = char2rocblas_operation(arg.transA);
-    rocblas_operation transB = char2rocblas_operation(arg.transB);
+    driver_operation transA = char2driver_operation(arg.transA);
+    driver_operation transB = char2driver_operation(arg.transB);
 
     rocblas_int M = arg.M;
     rocblas_int N = arg.N;
@@ -1237,10 +1264,10 @@ void BenchGemm(Arguments& arg, std::promise<std::pair<double,double>> promise)
     if(multi_device>1)
         hipGetDevice(&deviceId);
 
-    rocblas_int A_row = transA == rocblas_operation_none ? M : K;
-    rocblas_int A_col = transA == rocblas_operation_none ? K : M;
-    rocblas_int B_row = transB == rocblas_operation_none ? K : N;
-    rocblas_int B_col = transB == rocblas_operation_none ? N : K;
+    rocblas_int A_row = transA == driver_operation_none ? M : K;
+    rocblas_int A_col = transA == driver_operation_none ? K : M;
+    rocblas_int B_row = transB == driver_operation_none ? K : N;
+    rocblas_int B_col = transB == driver_operation_none ? N : K;
 
     // check here to prevent undefined memory allocation error
     if(M < 0 || N < 0 || K < 0 || lda < A_row || ldb < B_row || ldc < M)
@@ -1372,19 +1399,19 @@ void BenchGemm(Arguments& arg, std::promise<std::pair<double,double>> promise)
 #ifdef VALIDATE
     if(arg.norm_check)
     {
-        // ROCBLAS rocblas_pointer_mode_host
-        CHECK_ROCBLAS_ERROR(rocblas_set_pointer_mode(handle, rocblas_pointer_mode_host));
-        CHECK_ROCBLAS_ERROR(rocblas_gemm<T>(
+        // ROCBLAS DRIVER_POINTER_MODE_HOST
+        CHECK_DRIVER_ERROR(driver_set_pointer_mode(handle, DRIVER_POINTER_MODE_HOST));
+        CHECK_DRIVER_ERROR(driver_gemm<T>(
             handle, transA, transB, M, N, K, &h_alpha, dA, lda, dB, ldb, &h_beta, dC, ldc));
 
         CHECK_HIP_ERROR(hipMemcpy(hC_1, dC, sizeof(T) * size_C, hipMemcpyDeviceToHost));
 
-        // ROCBLAS rocblas_pointer_mode_device
-        CHECK_ROCBLAS_ERROR(rocblas_set_pointer_mode(handle, rocblas_pointer_mode_device));
+        // ROCBLAS DRIVER_POINTER_MODE_DEVICE
+        CHECK_DRIVER_ERROR(driver_set_pointer_mode(handle, DRIVER_POINTER_MODE_DEVICE));
         CHECK_HIP_ERROR(hipMemcpy(dC, hC, sizeof(T) * size_C, hipMemcpyHostToDevice));
         CHECK_HIP_ERROR(hipMemcpy(d_alpha, &h_alpha, sizeof(T), hipMemcpyHostToDevice));
         CHECK_HIP_ERROR(hipMemcpy(d_beta, &h_beta, sizeof(T), hipMemcpyHostToDevice));
-        CHECK_ROCBLAS_ERROR(rocblas_gemm<T>(
+        CHECK_DRIVER_ERROR(driver_gemm<T>(
             handle, transA, transB, M, N, K, d_alpha, dA, lda, dB, ldb, d_beta, dC, ldc));
 
         if(multi_device > 1 && deviceId!=0)
@@ -1396,8 +1423,8 @@ void BenchGemm(Arguments& arg, std::promise<std::pair<double,double>> promise)
         {
             cpu_time_used = get_time_us();
             
-            blis_gemm<T>(transA,
-                        transB,
+            blis_gemm<T>(char2rocblas_operation(arg.transA),
+                        char2rocblas_operation(arg.transB),
                         M,
                         N,
                         K,
@@ -1464,11 +1491,19 @@ void BenchGemm(Arguments& arg, std::promise<std::pair<double,double>> promise)
     float kernel_time_iter = 0.0f;
     double host_time_iter = 0.0f;
 
-    CHECK_ROCBLAS_ERROR(rocblas_set_pointer_mode(handle, rocblas_pointer_mode_host));
+    CHECK_DRIVER_ERROR(driver_set_pointer_mode(handle, DRIVER_POINTER_MODE_HOST));
 
     for(int i = 0; i < number_cold_calls; i++)
     {
-        rocblas_gemm<T>(
+// #ifdef HIPBLAS
+//         hipblasGemm<T>(
+//             handle, transA, transB, M, N, K, &h_alpha, dA, lda, dB, ldb, &h_beta, dC, ldc);
+// #else
+//         rocblas_gemm<T>(
+//             handle, transA, transB, M, N, K, &h_alpha, dA, lda, dB, ldb, &h_beta, dC, ldc);
+// #endif
+
+        driver_gemm<T>(
             handle, transA, transB, M, N, K, &h_alpha, dA, lda, dB, ldb, &h_beta, dC, ldc);
     }
     
@@ -1485,7 +1520,7 @@ void BenchGemm(Arguments& arg, std::promise<std::pair<double,double>> promise)
             host_time_iter = get_time_us();
             hipEventRecord(start, NULL);
 
-            rocblas_gemm<T>(
+            driver_gemm<T>(
             handle, transA, transB, M, N, K, &h_alpha, dA, lda, dB, ldb, &h_beta, dC, ldc);
 
             hipEventRecord(stop, NULL);
@@ -1507,7 +1542,7 @@ void BenchGemm(Arguments& arg, std::promise<std::pair<double,double>> promise)
         hipEventRecord(start, NULL);
         for(int i = 0; i < number_hot_calls; i++)
         {
-            rocblas_gemm<T>(
+            driver_gemm<T>(
             handle, transA, transB, M, N, K, &h_alpha, dA, lda, dB, ldb, &h_beta, dC, ldc);
         }
 

@@ -23,7 +23,9 @@
 #define _UTILITY_
 
 #define ROCM_USE_FLOAT16
-
+#ifdef HIPBLAS
+#include "hipblas.h"
+#endif
 #include "rocblas.h"
 #include <cmath>
 #include <fstream>
@@ -934,6 +936,344 @@ inline void rocblas_expect_status(rocblas_status status, rocblas_status expect)
 
 #define CHECK_ROCBLAS_ERROR2(STATUS) EXPECT_ROCBLAS_STATUS(STATUS, rocblas_status_success)
 #define CHECK_ROCBLAS_ERROR(STATUS) CHECK_ROCBLAS_ERROR2(STATUS)
+
+#ifdef HIPBLAS
+#define driver_operation hipblasOperation_t
+#define char2driver_operation char2hipblas_operation
+#define driver_operation_none HIPBLAS_OP_N
+#define driver_set_pointer_mode hipblasSetPointerMode
+#define DRIVER_POINTER_MODE_HOST HIPBLAS_POINTER_MODE_HOST
+#define DRIVER_POINTER_MODE_DEVICE HIPBLAS_POINTER_MODE_DEVICE
+#define CHECK_DRIVER_ERROR CHECK_HIPBLAS_ERROR
+// #define driver_gemm<T> hipblasGemm<T>
+// auto driver_gemm = hipblasGemm;
+#else
+#define driver_operation rocblas_operation
+#define char2driver_operation char2rocblas_operation
+#define driver_operation_none rocblas_operation_none
+#define driver_set_pointer_mode rocblas_set_pointer_mode
+#define DRIVER_POINTER_MODE_HOST rocblas_pointer_mode_host
+#define DRIVER_POINTER_MODE_DEVICE rocblas_pointer_mode_device
+#define CHECK_DRIVER_ERROR CHECK_ROCBLAS_ERROR
+// #define driver_gemm<T> rocblas_gemm<T>
+// auto driver_gemm = rocblas_gemm;
+
+#endif
+
+#ifdef HIPBLAS
+
+// return precision string for rocblas_datatype
+constexpr auto rocblas_datatype2hipblas_datatype(rocblas_datatype type)
+{
+    switch(type)
+    {
+    case rocblas_datatype_f16_r:
+        return HIPBLAS_R_16F;
+    case rocblas_datatype_f32_r:
+        return HIPBLAS_R_32F;
+    case rocblas_datatype_f64_r:
+        return HIPBLAS_R_64F;
+    case rocblas_datatype_f16_c:
+        return HIPBLAS_C_16F;
+    case rocblas_datatype_f32_c:
+        return HIPBLAS_C_32F;
+    case rocblas_datatype_f64_c:
+        return HIPBLAS_C_64F;
+    case rocblas_datatype_i8_r:
+        return HIPBLAS_R_8I;
+    case rocblas_datatype_u8_r:
+        return HIPBLAS_R_8U;
+    case rocblas_datatype_i32_r:
+        return HIPBLAS_R_32I;
+    case rocblas_datatype_u32_r:
+        return HIPBLAS_R_32U;
+    case rocblas_datatype_i8_c:
+        return HIPBLAS_C_8I;
+    case rocblas_datatype_u8_c:
+        return HIPBLAS_C_8U;
+    case rocblas_datatype_i32_c:
+        return HIPBLAS_C_32I;
+    case rocblas_datatype_u32_c:
+        return HIPBLAS_C_32U;
+    case rocblas_datatype_bf16_r:
+        return HIPBLAS_R_16B;
+    case rocblas_datatype_bf16_c:
+        return HIPBLAS_C_16B;
+    default:
+        return static_cast<hipblasDatatype_t>(-1);
+    }
+}
+
+constexpr auto rocblas_algo2hipblas_algo(rocblas_gemm_algo_ type)
+{
+    switch(type)
+    {
+    case rocblas_gemm_algo_standard:
+        return HIPBLAS_GEMM_DEFAULT;
+    default:
+        return static_cast<hipblasGemmAlgo_t>(-1);
+    }
+}
+
+#ifndef CHECK_HIPBLAS_ERROR
+#define EXPECT_HIPBLAS_STATUS(status, expected)      \
+    do                                               \
+    {                                                \
+        hipblasStatus_t status__ = (status);         \
+        if(status__ != expected)                     \
+        {                                            \
+            fprintf(stderr,                          \
+                    "hipBLAS error: %s at %s:%d\n",  \
+                    hipblasStatusToString(status__), \
+                    __FILE__,                        \
+                    __LINE__);                       \
+            exit(EXIT_FAILURE);                      \
+        }                                            \
+    } while(0)
+#define CHECK_HIPBLAS_ERROR(STATUS) EXPECT_HIPBLAS_STATUS(STATUS, HIPBLAS_STATUS_SUCCESS)
+#endif
+
+hipblasOperation_t char2hipblas_operation(char value)
+{
+    switch(value)
+    {
+    case 'N':
+        return HIPBLAS_OP_N;
+    case 'T':
+        return HIPBLAS_OP_T;
+    case 'C':
+        return HIPBLAS_OP_C;
+    case 'n':
+        return HIPBLAS_OP_N;
+    case 't':
+        return HIPBLAS_OP_T;
+    case 'c':
+        return HIPBLAS_OP_C;
+    }
+    return HIPBLAS_OP_N;
+}
+
+template <typename T, bool FORTRAN = false>
+hipblasStatus_t hipblasGemm(hipblasHandle_t    handle,
+                            hipblasOperation_t transA,
+                            hipblasOperation_t transB,
+                            int                m,
+                            int                n,
+                            int                k,
+                            const T*           alpha,
+                            const T*           A,
+                            int                lda,
+                            const T*           B,
+                            int                ldb,
+                            const T*           beta,
+                            T*                 C,
+                            int                ldc);
+
+template <typename T, bool FORTRAN = false>
+hipblasStatus_t hipblasGemmStridedBatched(hipblasHandle_t    handle,
+                                          hipblasOperation_t transA,
+                                          hipblasOperation_t transB,
+                                          int                m,
+                                          int                n,
+                                          int                k,
+                                          const T*           alpha,
+                                          const T*           A,
+                                          int                lda,
+                                          int                bsa,
+                                          const T*           B,
+                                          int                ldb,
+                                          int                bsb,
+                                          const T*           beta,
+                                          T*                 C,
+                                          int                ldc,
+                                          int                bsc,
+                                          int                batch_count);
+
+
+// gemm
+template <>
+hipblasStatus_t hipblasGemm<rocblas_half>(hipblasHandle_t    handle,
+                                         hipblasOperation_t transA,
+                                         hipblasOperation_t transB,
+                                         int                m,
+                                         int                n,
+                                         int                k,
+                                         const rocblas_half* alpha,
+                                         const rocblas_half* A,
+                                         int                lda,
+                                         const rocblas_half* B,
+                                         int                ldb,
+                                         const rocblas_half* beta,
+                                         rocblas_half*       C,
+                                         int                ldc)
+{
+    return hipblasHgemm(handle, transA, transB, m, n, k, reinterpret_cast<const hipblasHalf *>(alpha), reinterpret_cast<const hipblasHalf *>(A), lda, reinterpret_cast<const hipblasHalf *>(B), ldb, reinterpret_cast<const hipblasHalf *>(beta), reinterpret_cast<hipblasHalf *>(C), ldc);
+}
+
+template <>
+hipblasStatus_t hipblasGemm<float>(hipblasHandle_t    handle,
+                                   hipblasOperation_t transA,
+                                   hipblasOperation_t transB,
+                                   int                m,
+                                   int                n,
+                                   int                k,
+                                   const float*       alpha,
+                                   const float*       A,
+                                   int                lda,
+                                   const float*       B,
+                                   int                ldb,
+                                   const float*       beta,
+                                   float*             C,
+                                   int                ldc)
+{
+    return hipblasSgemm(handle, transA, transB, m, n, k, alpha, A, lda, B, ldb, beta, C, ldc);
+}
+
+template <>
+hipblasStatus_t hipblasGemm<double>(hipblasHandle_t    handle,
+                                    hipblasOperation_t transA,
+                                    hipblasOperation_t transB,
+                                    int                m,
+                                    int                n,
+                                    int                k,
+                                    const double*      alpha,
+                                    const double*      A,
+                                    int                lda,
+                                    const double*      B,
+                                    int                ldb,
+                                    const double*      beta,
+                                    double*            C,
+                                    int                ldc)
+{
+    return hipblasDgemm(handle, transA, transB, m, n, k, alpha, A, lda, B, ldb, beta, C, ldc);
+}
+
+
+// gemm_strided_batched
+template <>
+hipblasStatus_t hipblasGemmStridedBatched<rocblas_half>(hipblasHandle_t    handle,
+                                                       hipblasOperation_t transA,
+                                                       hipblasOperation_t transB,
+                                                       int                m,
+                                                       int                n,
+                                                       int                k,
+                                                       const rocblas_half* alpha,
+                                                       const rocblas_half* A,
+                                                       int                lda,
+                                                       int                bsa,
+                                                       const rocblas_half* B,
+                                                       int                ldb,
+                                                       int                bsb,
+                                                       const rocblas_half* beta,
+                                                       rocblas_half*       C,
+                                                       int                ldc,
+                                                       int                bsc,
+                                                       int                batch_count)
+{
+
+    return hipblasHgemmStridedBatched(handle,
+                                      transA,
+                                      transB,
+                                      m,
+                                      n,
+                                      k,
+                                      reinterpret_cast<const hipblasHalf *>(alpha),
+                                      reinterpret_cast<const hipblasHalf *>(A),
+                                      lda,
+                                      bsa,
+                                      reinterpret_cast<const hipblasHalf *>(B),
+                                      ldb,
+                                      bsb,
+                                      reinterpret_cast<const hipblasHalf *>(beta),
+                                      reinterpret_cast<hipblasHalf *>(C),
+                                      ldc,
+                                      bsc,
+                                      batch_count);
+}
+
+template <>
+hipblasStatus_t hipblasGemmStridedBatched<float>(hipblasHandle_t    handle,
+                                                 hipblasOperation_t transA,
+                                                 hipblasOperation_t transB,
+                                                 int                m,
+                                                 int                n,
+                                                 int                k,
+                                                 const float*       alpha,
+                                                 const float*       A,
+                                                 int                lda,
+                                                 int                bsa,
+                                                 const float*       B,
+                                                 int                ldb,
+                                                 int                bsb,
+                                                 const float*       beta,
+                                                 float*             C,
+                                                 int                ldc,
+                                                 int                bsc,
+                                                 int                batch_count)
+{
+
+    return hipblasSgemmStridedBatched(handle,
+                                      transA,
+                                      transB,
+                                      m,
+                                      n,
+                                      k,
+                                      alpha,
+                                      A,
+                                      lda,
+                                      bsa,
+                                      B,
+                                      ldb,
+                                      bsb,
+                                      beta,
+                                      C,
+                                      ldc,
+                                      bsc,
+                                      batch_count);
+}
+
+template <>
+hipblasStatus_t hipblasGemmStridedBatched<double>(hipblasHandle_t    handle,
+                                                  hipblasOperation_t transA,
+                                                  hipblasOperation_t transB,
+                                                  int                m,
+                                                  int                n,
+                                                  int                k,
+                                                  const double*      alpha,
+                                                  const double*      A,
+                                                  int                lda,
+                                                  int                bsa,
+                                                  const double*      B,
+                                                  int                ldb,
+                                                  int                bsb,
+                                                  const double*      beta,
+                                                  double*            C,
+                                                  int                ldc,
+                                                  int                bsc,
+                                                  int                batch_count)
+{
+
+    return hipblasDgemmStridedBatched(handle,
+                                      transA,
+                                      transB,
+                                      m,
+                                      n,
+                                      k,
+                                      alpha,
+                                      A,
+                                      lda,
+                                      bsa,
+                                      B,
+                                      ldb,
+                                      bsb,
+                                      beta,
+                                      C,
+                                      ldc,
+                                      bsc,
+                                      batch_count);
+}
+
+#endif
 
 // gemm
 template <typename T>
@@ -2713,8 +3053,8 @@ void readArgs(int argc, char* argv[], Arguments& arg)
 }
 
 template <typename Ti, typename To = Ti>
-void loadFromBin(rocblas_operation transA,
-                 rocblas_operation transB,
+void loadFromBin(driver_operation transA,
+                 driver_operation transB,
                  rocblas_int       M,
                  rocblas_int       N,
                  rocblas_int       K,
@@ -2730,7 +3070,7 @@ void loadFromBin(rocblas_operation transA,
                  rocblas_int       batch_count)
 {
     {
-        size_t sz = lda * (transA == rocblas_operation_none ? K : M) * sizeof(Ti) * batch_count;
+        size_t sz = lda * (transA == driver_operation_none ? K : M) * sizeof(Ti) * batch_count;
         std::ifstream FILE(ADataFile, std::ios::in | std::ofstream::binary);
         FILE.seekg(0, FILE.end);
         int fileLength = FILE.tellg();
@@ -2747,7 +3087,7 @@ void loadFromBin(rocblas_operation transA,
     }
 
     {
-        size_t sz = ldb * (transB == rocblas_operation_none ? N : K) * sizeof(Ti) * batch_count;
+        size_t sz = ldb * (transB == driver_operation_none ? N : K) * sizeof(Ti) * batch_count;
         std::ifstream FILE(BDataFile, std::ios::in | std::ofstream::binary);
         FILE.seekg(0, FILE.end);
         int fileLength = FILE.tellg();
@@ -2782,8 +3122,8 @@ void loadFromBin(rocblas_operation transA,
 }
 
 template <typename Ti, typename To>
-void storeInitToBin(rocblas_operation transA,
-                rocblas_operation transB,
+void storeInitToBin(driver_operation transA,
+                driver_operation transB,
                 rocblas_int       M,
                 rocblas_int       N,
                 rocblas_int       K,
@@ -2806,13 +3146,13 @@ void storeInitToBin(rocblas_operation transA,
         preFix = "device_" + std::to_string(deviceId) + "_";
     }
     {
-        size_t sz = lda * (transA == rocblas_operation_none ? K : M) * sizeof(Ti) * batch_count;
+        size_t sz = lda * (transA == driver_operation_none ? K : M) * sizeof(Ti) * batch_count;
         std::ofstream FILE(preFix+ADataFile, std::ios::out | std::ofstream::binary);
         FILE.write(reinterpret_cast<const char*>(&hA[0]), sz);
     }
 
     {
-        size_t sz = ldb * (transB == rocblas_operation_none ? N : K) * sizeof(Ti) * batch_count;
+        size_t sz = ldb * (transB == driver_operation_none ? N : K) * sizeof(Ti) * batch_count;
         std::ofstream FILE(preFix+BDataFile, std::ios::out | std::ofstream::binary);
         FILE.write(reinterpret_cast<const char*>(&hB[0]), sz);
     }
@@ -3038,8 +3378,8 @@ inline std::ostream& operator<<(std::ostream& os, rocblas_half x)
 }
 
 template <typename T>
-void normalizeInputs(rocblas_operation transa,
-                     rocblas_operation transb,
+void normalizeInputs(driver_operation transa,
+                     driver_operation transb,
                      size_t            m,
                      size_t            n,
                      size_t            k,
@@ -3053,7 +3393,7 @@ void normalizeInputs(rocblas_operation transa,
 {
     // We divide each element of B by the maximum corresponding element of A such that elem(A * B) <
     // 2 ** NSIG
-    if(transa == rocblas_operation_none)
+    if(transa == driver_operation_none)
     {
         for(size_t i = 0; i < batch; i++)
         {
@@ -3071,7 +3411,7 @@ void normalizeInputs(rocblas_operation transa,
                     abort();
 
                 scal = T(1) / scal;
-                if(transb == rocblas_operation_none)
+                if(transb == driver_operation_none)
                     for(size_t k = 0; k < n; ++k)
                         b[i * stride_b + j * ldb + k] *= scal;
                 else
@@ -3098,7 +3438,7 @@ void normalizeInputs(rocblas_operation transa,
                     abort();
 
                 scal = T(1) / scal;
-                if(transb == rocblas_operation_none)
+                if(transb == driver_operation_none)
                     for(size_t k = 0; k < n; ++k)
                         b[i * stride_b + j * ldb + k] *= scal;
                 else
@@ -3110,8 +3450,8 @@ void normalizeInputs(rocblas_operation transa,
 }
 
 template <typename T, typename U = T, std::enable_if_t<!std::is_same<T, int8_t>{},int> = 0>
-static void init_broad_range_random_gemm(rocblas_operation transa,
-                                         rocblas_operation transb,
+static void init_broad_range_random_gemm(driver_operation transa,
+                                         driver_operation transb,
                                          size_t            m,
                                          size_t            n,
                                          size_t            k,
@@ -3126,16 +3466,16 @@ static void init_broad_range_random_gemm(rocblas_operation transa,
                                          rocblas_stride stride_c,
                                          size_t batch = 1)
 {
-    init_matrix<rocm_random_squareable>(a, transa == rocblas_operation_none ? m : k, transa == rocblas_operation_none ? k : m, lda, stride_a, batch);
-    init_matrix<rocm_random_addable>(b, transb == rocblas_operation_none ? k : n, transb == rocblas_operation_none ? n : k, ldb, stride_b, batch);
+    init_matrix<rocm_random_squareable>(a, transa == driver_operation_none ? m : k, transa == driver_operation_none ? k : m, lda, stride_a, batch);
+    init_matrix<rocm_random_addable>(b, transb == driver_operation_none ? k : n, transb == driver_operation_none ? n : k, ldb, stride_b, batch);
     init_matrix<rocm_random_addable>(c, m, n, ldc, stride_c, batch);
 
     normalizeInputs<T>(transa, transb, m, n, k, a, lda, stride_a, b, ldb, stride_b, batch);
 }
 
 template <typename T, typename U = T, std::enable_if_t<std::is_same<T, int8_t>{},int> = 0>
-static void init_broad_range_random_gemm(rocblas_operation transa,
-                                         rocblas_operation transb,
+static void init_broad_range_random_gemm(driver_operation transa,
+                                         driver_operation transb,
                                          size_t            m,
                                          size_t            n,
                                          size_t            k,
@@ -3155,8 +3495,8 @@ static void init_broad_range_random_gemm(rocblas_operation transa,
 }
 
 template <typename T, typename U = T, std::enable_if_t<!std::is_same<T, int8_t>{},int> = 0>
-static void init_narrow_range_random_gemm(rocblas_operation transa,
-                                          rocblas_operation transb,
+static void init_narrow_range_random_gemm(driver_operation transa,
+                                          driver_operation transb,
                                           size_t            m,
                                           size_t            n,
                                           size_t            k,
@@ -3171,14 +3511,14 @@ static void init_narrow_range_random_gemm(rocblas_operation transa,
                                           rocblas_stride stride_c,
                                           size_t batch = 1)
 {
-    init_matrix<rocm_random_narrow_range>(a, transa == rocblas_operation_none ? m : k, transa == rocblas_operation_none ? k : m, lda, stride_a, batch);
-    init_matrix<rocm_random_narrow_range>(b, transb == rocblas_operation_none ? k : n, transb == rocblas_operation_none ? n : k, ldb, stride_b, batch);
+    init_matrix<rocm_random_narrow_range>(a, transa == driver_operation_none ? m : k, transa == driver_operation_none ? k : m, lda, stride_a, batch);
+    init_matrix<rocm_random_narrow_range>(b, transb == driver_operation_none ? k : n, transb == driver_operation_none ? n : k, ldb, stride_b, batch);
     init_matrix<rocm_random_narrow_range>(c, m, n, ldc, stride_c, batch);
 }
 
 template <typename T, typename U = T, std::enable_if_t<std::is_same<T, int8_t>{},int> = 0>
-static void init_narrow_range_random_gemm(rocblas_operation transa,
-                                          rocblas_operation transb,
+static void init_narrow_range_random_gemm(driver_operation transa,
+                                          driver_operation transb,
                                           size_t            m,
                                           size_t            n,
                                           size_t            k,
@@ -3199,8 +3539,8 @@ static void init_narrow_range_random_gemm(rocblas_operation transa,
 
 //can cause nans from overflow
 template <typename T, typename U = T, std::enable_if_t<!std::is_same<T, int8_t>{},int> = 0>
-static void init_full_range_random_gemm(rocblas_operation transa,
-                                        rocblas_operation transb,
+static void init_full_range_random_gemm(driver_operation transa,
+                                        driver_operation transb,
                                         size_t            m,
                                         size_t            n,
                                         size_t            k,
@@ -3215,15 +3555,15 @@ static void init_full_range_random_gemm(rocblas_operation transa,
                                         rocblas_stride stride_c,
                                         size_t batch = 1)
 {
-    init_matrix<rocm_random_full_range>(a, transa == rocblas_operation_none ? m : k, transa == rocblas_operation_none ? k : m, lda, stride_a, batch);
-    init_matrix<rocm_random_full_range>(b, transb == rocblas_operation_none ? k : n, transb == rocblas_operation_none ? n : k, ldb, stride_b, batch);
+    init_matrix<rocm_random_full_range>(a, transa == driver_operation_none ? m : k, transa == driver_operation_none ? k : m, lda, stride_a, batch);
+    init_matrix<rocm_random_full_range>(b, transb == driver_operation_none ? k : n, transb == driver_operation_none ? n : k, ldb, stride_b, batch);
     init_matrix<rocm_random_full_range>(c, m, n, ldc, stride_c, batch);
 }
 
 //can cause nans from overflow
 template <typename T, typename U = T, std::enable_if_t<std::is_same<T, int8_t>{},int> = 0>
-static void init_full_range_random_gemm(rocblas_operation transa,
-                                        rocblas_operation transb,
+static void init_full_range_random_gemm(driver_operation transa,
+                                        driver_operation transb,
                                         size_t            m,
                                         size_t            n,
                                         size_t            k,
@@ -3243,8 +3583,8 @@ static void init_full_range_random_gemm(rocblas_operation transa,
 }
 
 template <typename T, typename U = T>
-static void init_constant_gemm(rocblas_operation transa,
-                               rocblas_operation transb,
+static void init_constant_gemm(driver_operation transa,
+                               driver_operation transb,
                                size_t            m,
                                size_t            n,
                                size_t            k,
@@ -3260,9 +3600,34 @@ static void init_constant_gemm(rocblas_operation transa,
                                T      val,
                                size_t batch = 1)
 {
-    init_constant_matrix<T>(a, transa == rocblas_operation_none ? m : k, transa == rocblas_operation_none ? k : m, lda, stride_a, batch, val);
-    init_constant_matrix<T>(b, transb == rocblas_operation_none ? k : n, transb == rocblas_operation_none ? n : k, ldb, stride_b, batch, val);
+    init_constant_matrix<T>(a, transa == driver_operation_none ? m : k, transa == driver_operation_none ? k : m, lda, stride_a, batch, val);
+    init_constant_matrix<T>(b, transb == driver_operation_none ? k : n, transb == driver_operation_none ? n : k, ldb, stride_b, batch, val);
     init_constant_matrix<U>(c, m, n, ldc, stride_c, batch, U(val));
 }
+
+#ifdef HIPBLAS
+// #define driver_operation hipblasOperation_t
+// #define char2driver_operation char2hipblas_operation
+// #define driver_operation_none HIPBLAS_OP_N
+#define driver_gemm hipblasGemm
+#define driver_gemm_strided_batched hipblasGemmStridedBatched
+#define driver_gemm_ex hipblasGemmEx
+#define driver_type(X) rocblas_datatype2hipblas_datatype(X)
+#define driver_algo(X) rocblas_algo2hipblas_algo(X)
+// #define driver_output_type(X) rocblas_datatype2hipblas_datatype(X)
+// auto driver_gemm = hipblasGemm;
+#else
+// #define driver_operation rocblas_operation
+// #define char2driver_operation char2rocblas_operation
+// #define driver_operation_none rocblas_operation_none
+#define driver_gemm rocblas_gemm
+#define driver_gemm_strided_batched rocblas_gemm_strided_batched
+#define driver_gemm_ex rocblas_gemm_ex
+#define driver_type(X) X
+#define driver_algo(X) X
+// #define driver_output_type(X) X
+// auto driver_gemm = rocblas_gemm;
+#endif
+
 
 #endif /* _UTILITY_ */

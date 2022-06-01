@@ -20,6 +20,12 @@ case $key in
     shift # past argument
     shift # past value
     ;;
+    -p|--hipblas)
+    HIPBLAS="$2"
+    BUILD_WITH_HIPBLAS=1
+    shift # past argument
+    shift # past value
+    ;;
     -g|--debug)
     DEBUG="$2"
     shift # past argument
@@ -45,6 +51,7 @@ then
 where:\n
     -h (--help)       show this help text\n
     -r (--rocblas)    flag to use local copy of rocblas by specifying the base directory\n
+    -p (--hipblas)    flag to use local copy of hipblas by specifying the base directory. Leave empty to use installed copy\n
     -v (--validate)   flag to enable blis validation option (default to 0)\n
     -g (--debug)      flag to build with debug symbols (default to 0)\n"
    exit 1
@@ -123,4 +130,4 @@ else
   CLANG=0
 fi
 
-make VALIDATE=$VALIDATE ROCBLASPATH=$ROCBLAS DEBUG=$DEBUG CLANG=$CLANG
+make VALIDATE=$VALIDATE ROCBLASPATH=$ROCBLAS HIPBLASPATH=$HIPBLAS DEBUG=$DEBUG CLANG=$CLANG BUILD_WITH_HIPBLAS=$BUILD_WITH_HIPBLAS
