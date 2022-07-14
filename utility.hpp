@@ -23,10 +23,7 @@
 #define _UTILITY_
 
 #define ROCM_USE_FLOAT16
-#ifdef HIPBLAS
-#include "hipblas.h"
-#endif
-#include "rocblas.h"
+// #include "rocblas.h"
 #include <cmath>
 #include <fstream>
 #include <immintrin.h>
@@ -42,119 +39,77 @@
 #include <fcntl.h>
 #include <type_traits>
 #include <sys/stat.h>
+#include <csignal>
 
 #include <boost/program_options.hpp>
+
+using rocblas_rng_t = std::mt19937;
+extern rocblas_rng_t rocblas_rng, rocblas_seed;
+
+rocblas_rng_t rocblas_rng, rocblas_seed;
+
 namespace po = boost::program_options;
 
-// clang-format off
-// return letter N,T,C in place of rocblas_operation enum
-constexpr char rocblas_transpose_letter(rocblas_operation trans)
-{
-    switch(trans)
-    {
-    case rocblas_operation_none:                return 'N';
-    case rocblas_operation_transpose:           return 'T';
-    case rocblas_operation_conjugate_transpose: return 'C';
-    }
-    return ' ';
-}
+#ifdef HIPBLAS
+#include "hipblas_utility.hpp"
+#else
+#include "rocblas_utility.hpp"
+#endif
 
-// return letter L, R, B in place of rocblas_side enum
-constexpr char rocblas_side_letter(rocblas_side side)
+typedef enum driver_status_
 {
-    switch(side)
-    {
-    case rocblas_side_left:  return 'L';
-    case rocblas_side_right: return 'R';
-    case rocblas_side_both:  return 'B';
-    }
-    return ' ';
-}
+    driver_status_success         = 0, /**< success */
+    driver_status_invalid_handle  = 1, /**< handle not initialized, invalid or null */
+    driver_status_not_implemented = 2, /**< function is not implemented */
+    driver_status_invalid_pointer = 3, /**< invalid pointer argument */
+    driver_status_invalid_size    = 4, /**< invalid size argument */
+    driver_status_memory_error    = 5, /**< failed internal memory allocation, copy or dealloc */
+    driver_status_internal_error  = 6, /**< other internal library failure */
+    driver_status_perf_degraded   = 7, /**< performance degraded due to low device memory */
+    driver_status_size_query_mismatch = 8, /**< unmatched start/stop size query */
+    driver_status_size_increased      = 9, /**< queried device memory size increased */
+    driver_status_size_unchanged      = 10, /**< queried device memory size unchanged */
+    driver_status_invalid_value       = 11, /**< passed argument not valid */
+    driver_status_continue            = 12, /**< nothing preventing function to proceed */
+    driver_status_check_numerics_fail
+    = 13, /**< will be set if the vector/matrix has a NaN/Infinity/denormal value */
+} driver_status;
 
-// return letter U, L, B in place of rocblas_fill enum
-constexpr char rocblas_fill_letter(rocblas_fill fill)
-{
-    switch(fill)
-    {
-    case rocblas_fill_upper: return 'U';
-    case rocblas_fill_lower: return 'L';
-    case rocblas_fill_full:  return 'F';
-    }
-    return ' ';
-}
+// // Abort function which is called only once by driver_abort
+// static void abort_once()
+// {
+// #ifndef WIN32
+//     // Make sure the alarm and abort actions are default
+//     signal(SIGALRM, SIG_DFL);
+//     signal(SIGABRT, SIG_DFL);
 
-// return letter N, U in place of rocblas_diagonal enum
-constexpr char rocblas_diag_letter(rocblas_diagonal diag)
-{
-    switch(diag)
-    {
-    case rocblas_diagonal_non_unit: return 'N';
-    case rocblas_diagonal_unit:     return 'U';
-    }
-    return ' ';
-}
+//     // Unblock the alarm and abort signals
+//     sigset_t set[1];
+//     sigemptyset(set);
+//     sigaddset(set, SIGALRM);
+//     sigaddset(set, SIGABRT);
+//     sigprocmask(SIG_UNBLOCK, set, nullptr);
 
-// return precision string for rocblas_datatype
-constexpr const char* rocblas_datatype_string(rocblas_datatype type)
-{
-    switch(type)
-    {
-    case rocblas_datatype_f16_r:  return "f16_r";
-    case rocblas_datatype_f32_r:  return "f32_r";
-    case rocblas_datatype_f64_r:  return "f64_r";
-    case rocblas_datatype_f16_c:  return "f16_c";
-    case rocblas_datatype_f32_c:  return "f32_c";
-    case rocblas_datatype_f64_c:  return "f64_c";
-    case rocblas_datatype_i8_r:   return "i8_r";
-    case rocblas_datatype_u8_r:   return "u8_r";
-    case rocblas_datatype_i32_r:  return "i32_r";
-    case rocblas_datatype_u32_r:  return "u32_r";
-    case rocblas_datatype_i8_c:   return "i8_c";
-    case rocblas_datatype_u8_c:   return "u8_c";
-    case rocblas_datatype_i32_c:  return "i32_c";
-    case rocblas_datatype_u32_c:  return "u32_c";
-    case rocblas_datatype_bf16_r: return "bf16_r";
-    case rocblas_datatype_bf16_c: return "bf16_c";
-    }
-    return "invalid";
-}
+//     // Timeout in case of deadlock
+//     alarm(5);
+// #endif
 
-// return sizeof rocblas_datatype
-constexpr size_t rocblas_sizeof_datatype(rocblas_datatype type)
-{
-    switch(type)
-    {
-    case rocblas_datatype_f16_r:  return 2;
-    case rocblas_datatype_f32_r:  return 4;
-    case rocblas_datatype_f64_r:  return 8;
-    case rocblas_datatype_f16_c:  return 4;
-    case rocblas_datatype_f32_c:  return 8;
-    case rocblas_datatype_f64_c:  return 16;
-    case rocblas_datatype_i8_r:   return 1;
-    case rocblas_datatype_u8_r:   return 1;
-    case rocblas_datatype_i32_r:  return 4;
-    case rocblas_datatype_u32_r:  return 4;
-    case rocblas_datatype_i8_c:   return 2;
-    case rocblas_datatype_u8_c:   return 2;
-    case rocblas_datatype_i32_c:  return 8;
-    case rocblas_datatype_u32_c:  return 8;
-    case rocblas_datatype_bf16_r: return 2;
-    case rocblas_datatype_bf16_c: return 4;
-    }
-    return 0;
-}
+//     // Clear the map, stopping all workers
+//     internal_ostream::clear_workers();
 
-// Convert atomics mode to string
-constexpr const char* rocblas_atomics_mode_to_string(rocblas_atomics_mode mode)
-{
-    return mode != rocblas_atomics_not_allowed ? "atomics_allowed" : "atomics_not_allowed";
-}
+//     // Flush all
+//     fflush(NULL);
 
-// Convert gemm flags to string
-constexpr const char* rocblas_gemm_flags_to_string(rocblas_gemm_flags)
-{
-    return "none";
-}
+//     // Abort
+//     std::abort();
+// }
+
+// // Abort function which safely flushes all IO
+// extern "C" void driver_abort()
+// {
+//     // If multiple threads call driver_abort(), the first one wins
+//     static int once = (abort_once(), 0);
+// }
 
 #define rocblas_cout (internal_ostream::cout())
 #define rocblas_cerr (internal_ostream::cerr())
@@ -285,7 +240,8 @@ class internal_ostream
             if(fd == -1 || !(file = fdopen(fd, "a")))
             {
                 perror("fdopen() error");
-                rocblas_abort();
+                exit(1);
+                // driver_abort();
             }
 
             // Create a worker thread, capturing *this
@@ -462,7 +418,8 @@ public:
         if(!worker_ptr)
         {
             dprintf(STDERR_FILENO, "Error: Bad file descriptor %d\n", fd);
-            rocblas_abort();
+                exit(1);
+                // driver_abort();
         }
     }
 
@@ -474,7 +431,8 @@ public:
         if(!worker_ptr)
         {
             dprintf(STDERR_FILENO, "Cannot open %s: %m\n", filename);
-            rocblas_abort();
+                exit(1);
+                // driver_abort();
         }
         close(fd);
     }
@@ -549,7 +507,7 @@ public:
     }
 
     // Abort function which safely flushes all IO
-    friend void rocblas_abort_once();
+    // friend void abort_once();
 
     /*************************************************************************
      * Non-member friend functions for formatted output                      *
@@ -582,17 +540,17 @@ public:
         return os;
     }
 
-    // Complex output
-    template <typename T>
-    friend internal_ostream& operator<<(internal_ostream&     os,
-                                                const rocblas_complex_num<T>& x)
-    {
-        if(os.yaml)
-            os.os << "'(" << std::real(x) << "," << std::imag(x) << ")'";
-        else
-            os.os << x;
-        return os;
-    }
+    // // Complex output
+    // template <typename T>
+    // friend internal_ostream& operator<<(internal_ostream&     os,
+    //                                             const rocblas_complex_num<T>& x)
+    // {
+    //     if(os.yaml)
+    //         os.os << "'(" << std::real(x) << "," << std::imag(x) << ")'";
+    //     else
+    //         os.os << x;
+    //     return os;
+    // }
 
     // Floating-point output
     friend internal_ostream& operator<<(internal_ostream& os, double x)
@@ -628,15 +586,15 @@ public:
         return os;
     }
 
-    friend internal_ostream& operator<<(internal_ostream& os, rocblas_half half)
-    {
-        return os << float(half);
-    }
+    // friend internal_ostream& operator<<(internal_ostream& os, driver_half half)
+    // {
+    //     return os << float(half);
+    // }
 
-    friend internal_ostream& operator<<(internal_ostream& os, rocblas_bfloat16 bf16)
-    {
-        return os << float(bf16);
-    }
+    // friend internal_ostream& operator<<(internal_ostream& os, driver_bfloat16 bf16)
+    // {
+    //     return os << float(bf16);
+    // }
 
     // Integer output
     friend internal_ostream& operator<<(internal_ostream& os, int32_t x)
@@ -698,64 +656,64 @@ public:
         return os << s.c_str();
     }
 
-    // rocblas_datatype output
-    friend internal_ostream& operator<<(internal_ostream& os, rocblas_datatype d)
-    {
-        os.os << rocblas_datatype_string(d);
-        return os;
-    }
+    // // driver_type output
+    // friend internal_ostream& operator<<(internal_ostream& os, driver_type d)
+    // {
+    //     os.os << driver_type_string(d);
+    //     return os;
+    // }
 
-    // rocblas_operation output
-    friend internal_ostream& operator<<(internal_ostream& os,
-                                                rocblas_operation         trans)
+    // // rocblas_operation output
+    // friend internal_ostream& operator<<(internal_ostream& os,
+    //                                             rocblas_operation         trans)
 
-    {
-        return os << rocblas_transpose_letter(trans);
-    }
+    // {
+    //     return os << rocblas_transpose_letter(trans);
+    // }
 
-    // rocblas_fill output
-    friend internal_ostream& operator<<(internal_ostream& os, rocblas_fill fill)
+    // // rocblas_fill output
+    // friend internal_ostream& operator<<(internal_ostream& os, rocblas_fill fill)
 
-    {
-        return os << rocblas_fill_letter(fill);
-    }
+    // {
+    //     return os << rocblas_fill_letter(fill);
+    // }
 
-    // rocblas_diagonal output
-    friend internal_ostream& operator<<(internal_ostream& os, rocblas_diagonal diag)
+    // // rocblas_diagonal output
+    // friend internal_ostream& operator<<(internal_ostream& os, rocblas_diagonal diag)
 
-    {
-        return os << rocblas_diag_letter(diag);
-    }
+    // {
+    //     return os << rocblas_diag_letter(diag);
+    // }
 
-    // rocblas_side output
-    friend internal_ostream& operator<<(internal_ostream& os, rocblas_side side)
+    // // rocblas_side output
+    // friend internal_ostream& operator<<(internal_ostream& os, rocblas_side side)
 
-    {
-        return os << rocblas_side_letter(side);
-    }
+    // {
+    //     return os << rocblas_side_letter(side);
+    // }
 
-    // rocblas_status output
-    friend internal_ostream& operator<<(internal_ostream& os, rocblas_status status)
-    {
-        os.os << rocblas_status_to_string(status);
-        return os;
-    }
+    // // driver_status output
+    // friend internal_ostream& operator<<(internal_ostream& os, driver_status status)
+    // {
+    //     os.os << driver_status_to_string(status);
+    //     return os;
+    // }
 
-    // atomics mode output
-    friend internal_ostream& operator<<(internal_ostream& os,
-                                                rocblas_atomics_mode      mode)
-    {
-        os.os << rocblas_atomics_mode_to_string(mode);
-        return os;
-    }
+    // // atomics mode output
+    // friend internal_ostream& operator<<(internal_ostream& os,
+    //                                             rocblas_atomics_mode      mode)
+    // {
+    //     os.os << rocblas_atomics_mode_to_string(mode);
+    //     return os;
+    // }
 
-    // gemm flags output
-    friend internal_ostream& operator<<(internal_ostream& os,
-                                                rocblas_gemm_flags        flags)
-    {
-        os.os << rocblas_gemm_flags_to_string(flags);
-        return os;
-    }
+    // // gemm flags output
+    // friend internal_ostream& operator<<(internal_ostream& os,
+    //                                             rocblas_gemm_flags        flags)
+    // {
+    //     os.os << rocblas_gemm_flags_to_string(flags);
+    //     return os;
+    // }
 
     // Transfer internal_ostream to std::ostream
     friend std::ostream& operator<<(std::ostream& os, const internal_ostream& str)
@@ -775,12 +733,12 @@ public:
     friend internal_ostream& operator<<(internal_ostream& os,
                                                 std::ostream& (*pf)(std::ostream&))
     {
-        // Turn YAML formatting on or off
-        if(pf == internal_ostream::yaml_on)
-            os.yaml = true;
-        else if(pf == internal_ostream::yaml_off)
-            os.yaml = false;
-        else
+        // // Turn YAML formatting on or off
+        // if(pf == internal_ostream::yaml_on)
+        //     os.yaml = true;
+        // else if(pf == internal_ostream::yaml_off)
+        //     os.yaml = false;
+        // else
         {
             // Output the manipulator to the buffer
             os.os << pf;
@@ -796,8 +754,8 @@ public:
     }
 
     // YAML Manipulators (only used for their addresses now)
-    static std::ostream& yaml_on(std::ostream& os);
-    static std::ostream& yaml_off(std::ostream& os);
+    // static std::ostream& yaml_on(std::ostream& os);
+    // static std::ostream& yaml_off(std::ostream& os);
 };
 
 /*! \brief  CPU Timer(in microsecond): synchronize with the default device and return wall time */
@@ -811,11 +769,11 @@ double get_time_us(void)
 
 /* ============================================================================================ */
 /*  device query and print out their ID and name; return number of compute-capable devices. */
-rocblas_int query_device_property()
+int query_device_property()
 {
     int            device_count;
-    rocblas_status status = (rocblas_status)hipGetDeviceCount(&device_count);
-    if(status != rocblas_status_success)
+    driver_status status = (driver_status)hipGetDeviceCount(&device_count);
+    if(status != driver_status_success)
     {
         rocblas_cerr << "Query device error: cannot get device count" << std::endl;
         return -1;
@@ -826,7 +784,7 @@ rocblas_int query_device_property()
                      << std::endl;
     }
 
-    for(rocblas_int i = 0;; i++)
+    for(int i = 0;; i++)
     {
         rocblas_cout
             << "-------------------------------------------------------------------------------"
@@ -836,8 +794,8 @@ rocblas_int query_device_property()
             break;
 
         hipDeviceProp_t props;
-        rocblas_status  status = (rocblas_status)hipGetDeviceProperties(&props, i);
-        if(status != rocblas_status_success)
+        driver_status  status = (driver_status)hipGetDeviceProperties(&props, i);
+        if(status != driver_status_success)
         {
             rocblas_cerr << "Query device error: cannot get device ID " << i << "'s property"
                          << std::endl;
@@ -872,46 +830,46 @@ rocblas_int query_device_property()
 }
 
 /*  set current device to device_id */
-void set_device(rocblas_int device_id)
+void set_device(int device_id)
 {
-    rocblas_status status = (rocblas_status)hipSetDevice(device_id);
-    if(status != rocblas_status_success)
+    driver_status status = (driver_status)hipSetDevice(device_id);
+    if(status != driver_status_success)
     {
         printf("Set device error: cannot set device ID %d, there may not be such device ID\n",
                (int)device_id);
     }
 }
 
-inline const char* rocblas_status_to_string(rocblas_status status)
+inline const char* driver_status_to_string(driver_status status)
 {
     switch(status)
     {
-    case rocblas_status_success:
-        return "rocblas_status_success";
-    case rocblas_status_invalid_handle:
-        return "rocblas_status_invalid_handle";
-    case rocblas_status_not_implemented:
-        return "rocblas_status_not_implemented";
-    case rocblas_status_invalid_pointer:
-        return "rocblas_status_invalid_pointer";
-    case rocblas_status_invalid_size:
-        return "rocblas_status_invalid_size";
-    case rocblas_status_memory_error:
-        return "rocblas_status_memory_error";
-    case rocblas_status_internal_error:
-        return "rocblas_status_internal_error";
+    case driver_status_success:
+        return "driver_status_success";
+    case driver_status_invalid_handle:
+        return "driver_status_invalid_handle";
+    case driver_status_not_implemented:
+        return "driver_status_not_implemented";
+    case driver_status_invalid_pointer:
+        return "driver_status_invalid_pointer";
+    case driver_status_invalid_size:
+        return "driver_status_invalid_size";
+    case driver_status_memory_error:
+        return "driver_status_memory_error";
+    case driver_status_internal_error:
+        return "driver_status_internal_error";
     default:
-        return "<undefined rocblas_status value>";
+        return "<undefined driver_status value>";
     }
 }
 
-inline void rocblas_expect_status(rocblas_status status, rocblas_status expect)
+inline void rocblas_expect_status(driver_status status, driver_status expect)
 {
     if(status != expect)
     {
-        std::cerr << "rocBLAS status error: Expected " << rocblas_status_to_string(expect)
-                  << ", received " << rocblas_status_to_string(status) << std::endl;
-        if(expect == rocblas_status_success)
+        std::cerr << "rocBLAS status error: Expected " << driver_status_to_string(expect)
+                  << ", received " << driver_status_to_string(status) << std::endl;
+        if(expect == driver_status_success)
             exit(EXIT_FAILURE);
     }
 }
@@ -932,411 +890,36 @@ inline void rocblas_expect_status(rocblas_status status, rocblas_status expect)
         }                                         \
     } while(0)
 
-#define EXPECT_ROCBLAS_STATUS rocblas_expect_status
+#define EXPECT_driver_status rocblas_expect_status
 
-#define CHECK_ROCBLAS_ERROR2(STATUS) EXPECT_ROCBLAS_STATUS(STATUS, rocblas_status_success)
+#define CHECK_ROCBLAS_ERROR2(STATUS) EXPECT_driver_status(STATUS, driver_status_success)
 #define CHECK_ROCBLAS_ERROR(STATUS) CHECK_ROCBLAS_ERROR2(STATUS)
 
-#ifdef HIPBLAS
-#define driver_operation hipblasOperation_t
-#define char2driver_operation char2hipblas_operation
-#define driver_operation_none HIPBLAS_OP_N
-#define driver_set_pointer_mode hipblasSetPointerMode
-#define DRIVER_POINTER_MODE_HOST HIPBLAS_POINTER_MODE_HOST
-#define DRIVER_POINTER_MODE_DEVICE HIPBLAS_POINTER_MODE_DEVICE
-#define CHECK_DRIVER_ERROR CHECK_HIPBLAS_ERROR
-// #define driver_gemm<T> hipblasGemm<T>
-// auto driver_gemm = hipblasGemm;
-#else
-#define driver_operation rocblas_operation
-#define char2driver_operation char2rocblas_operation
-#define driver_operation_none rocblas_operation_none
-#define driver_set_pointer_mode rocblas_set_pointer_mode
-#define DRIVER_POINTER_MODE_HOST rocblas_pointer_mode_host
-#define DRIVER_POINTER_MODE_DEVICE rocblas_pointer_mode_device
-#define CHECK_DRIVER_ERROR CHECK_ROCBLAS_ERROR
+// #ifdef HIPBLAS
+// #define driver_operation hipblasOperation_t
+// #define char2driver_operation char2hipblas_operation
+// #define driver_operation_none HIPBLAS_OP_N
+// #define driver_set_pointer_mode hipblasSetPointerMode
+// #define DRIVER_POINTER_MODE_HOST HIPBLAS_POINTER_MODE_HOST
+// #define DRIVER_POINTER_MODE_DEVICE HIPBLAS_POINTER_MODE_DEVICE
+// #define CHECK_DRIVER_ERROR CHECK_HIPBLAS_ERROR
+// // #define driver_gemm<T> hipblasGemm<T>
+// // auto driver_gemm = hipblasGemm;
+// #else
+// #define driver_operation rocblas_operation
+// #define char2driver_operation char2rocblas_operation
+// #define driver_operation_none rocblas_operation_none
+// #define driver_set_pointer_mode rocblas_set_pointer_mode
+// #define DRIVER_POINTER_MODE_HOST rocblas_pointer_mode_host
+// #define DRIVER_POINTER_MODE_DEVICE rocblas_pointer_mode_device
+// #define CHECK_DRIVER_ERROR CHECK_ROCBLAS_ERROR
 // #define driver_gemm<T> rocblas_gemm<T>
 // auto driver_gemm = rocblas_gemm;
 
-#endif
-
-#ifdef HIPBLAS
-
-// return precision string for rocblas_datatype
-constexpr auto rocblas_datatype2hipblas_datatype(rocblas_datatype type)
-{
-    switch(type)
-    {
-    case rocblas_datatype_f16_r:
-        return HIPBLAS_R_16F;
-    case rocblas_datatype_f32_r:
-        return HIPBLAS_R_32F;
-    case rocblas_datatype_f64_r:
-        return HIPBLAS_R_64F;
-    case rocblas_datatype_f16_c:
-        return HIPBLAS_C_16F;
-    case rocblas_datatype_f32_c:
-        return HIPBLAS_C_32F;
-    case rocblas_datatype_f64_c:
-        return HIPBLAS_C_64F;
-    case rocblas_datatype_i8_r:
-        return HIPBLAS_R_8I;
-    case rocblas_datatype_u8_r:
-        return HIPBLAS_R_8U;
-    case rocblas_datatype_i32_r:
-        return HIPBLAS_R_32I;
-    case rocblas_datatype_u32_r:
-        return HIPBLAS_R_32U;
-    case rocblas_datatype_i8_c:
-        return HIPBLAS_C_8I;
-    case rocblas_datatype_u8_c:
-        return HIPBLAS_C_8U;
-    case rocblas_datatype_i32_c:
-        return HIPBLAS_C_32I;
-    case rocblas_datatype_u32_c:
-        return HIPBLAS_C_32U;
-    case rocblas_datatype_bf16_r:
-        return HIPBLAS_R_16B;
-    case rocblas_datatype_bf16_c:
-        return HIPBLAS_C_16B;
-    default:
-        return static_cast<hipblasDatatype_t>(-1);
-    }
-}
-
-constexpr auto rocblas_algo2hipblas_algo(rocblas_gemm_algo_ type)
-{
-    switch(type)
-    {
-    case rocblas_gemm_algo_standard:
-        return HIPBLAS_GEMM_DEFAULT;
-    default:
-        return static_cast<hipblasGemmAlgo_t>(-1);
-    }
-}
-
-#ifndef CHECK_HIPBLAS_ERROR
-#define EXPECT_HIPBLAS_STATUS(status, expected)      \
-    do                                               \
-    {                                                \
-        hipblasStatus_t status__ = (status);         \
-        if(status__ != expected)                     \
-        {                                            \
-            fprintf(stderr,                          \
-                    "hipBLAS error: %s at %s:%d\n",  \
-                    hipblasStatusToString(status__), \
-                    __FILE__,                        \
-                    __LINE__);                       \
-            exit(EXIT_FAILURE);                      \
-        }                                            \
-    } while(0)
-#define CHECK_HIPBLAS_ERROR(STATUS) EXPECT_HIPBLAS_STATUS(STATUS, HIPBLAS_STATUS_SUCCESS)
-#endif
-
-hipblasOperation_t char2hipblas_operation(char value)
-{
-    switch(value)
-    {
-    case 'N':
-        return HIPBLAS_OP_N;
-    case 'T':
-        return HIPBLAS_OP_T;
-    case 'C':
-        return HIPBLAS_OP_C;
-    case 'n':
-        return HIPBLAS_OP_N;
-    case 't':
-        return HIPBLAS_OP_T;
-    case 'c':
-        return HIPBLAS_OP_C;
-    }
-    return HIPBLAS_OP_N;
-}
-
-template <typename T, bool FORTRAN = false>
-hipblasStatus_t hipblasGemm(hipblasHandle_t    handle,
-                            hipblasOperation_t transA,
-                            hipblasOperation_t transB,
-                            int                m,
-                            int                n,
-                            int                k,
-                            const T*           alpha,
-                            const T*           A,
-                            int                lda,
-                            const T*           B,
-                            int                ldb,
-                            const T*           beta,
-                            T*                 C,
-                            int                ldc);
-
-template <typename T, bool FORTRAN = false>
-hipblasStatus_t hipblasGemmStridedBatched(hipblasHandle_t    handle,
-                                          hipblasOperation_t transA,
-                                          hipblasOperation_t transB,
-                                          int                m,
-                                          int                n,
-                                          int                k,
-                                          const T*           alpha,
-                                          const T*           A,
-                                          int                lda,
-                                          int                bsa,
-                                          const T*           B,
-                                          int                ldb,
-                                          int                bsb,
-                                          const T*           beta,
-                                          T*                 C,
-                                          int                ldc,
-                                          int                bsc,
-                                          int                batch_count);
-
-
-// gemm
-template <>
-hipblasStatus_t hipblasGemm<rocblas_half>(hipblasHandle_t    handle,
-                                         hipblasOperation_t transA,
-                                         hipblasOperation_t transB,
-                                         int                m,
-                                         int                n,
-                                         int                k,
-                                         const rocblas_half* alpha,
-                                         const rocblas_half* A,
-                                         int                lda,
-                                         const rocblas_half* B,
-                                         int                ldb,
-                                         const rocblas_half* beta,
-                                         rocblas_half*       C,
-                                         int                ldc)
-{
-    return hipblasHgemm(handle, transA, transB, m, n, k, reinterpret_cast<const hipblasHalf *>(alpha), reinterpret_cast<const hipblasHalf *>(A), lda, reinterpret_cast<const hipblasHalf *>(B), ldb, reinterpret_cast<const hipblasHalf *>(beta), reinterpret_cast<hipblasHalf *>(C), ldc);
-}
-
-template <>
-hipblasStatus_t hipblasGemm<float>(hipblasHandle_t    handle,
-                                   hipblasOperation_t transA,
-                                   hipblasOperation_t transB,
-                                   int                m,
-                                   int                n,
-                                   int                k,
-                                   const float*       alpha,
-                                   const float*       A,
-                                   int                lda,
-                                   const float*       B,
-                                   int                ldb,
-                                   const float*       beta,
-                                   float*             C,
-                                   int                ldc)
-{
-    return hipblasSgemm(handle, transA, transB, m, n, k, alpha, A, lda, B, ldb, beta, C, ldc);
-}
-
-template <>
-hipblasStatus_t hipblasGemm<double>(hipblasHandle_t    handle,
-                                    hipblasOperation_t transA,
-                                    hipblasOperation_t transB,
-                                    int                m,
-                                    int                n,
-                                    int                k,
-                                    const double*      alpha,
-                                    const double*      A,
-                                    int                lda,
-                                    const double*      B,
-                                    int                ldb,
-                                    const double*      beta,
-                                    double*            C,
-                                    int                ldc)
-{
-    return hipblasDgemm(handle, transA, transB, m, n, k, alpha, A, lda, B, ldb, beta, C, ldc);
-}
-
-
-// gemm_strided_batched
-template <>
-hipblasStatus_t hipblasGemmStridedBatched<rocblas_half>(hipblasHandle_t    handle,
-                                                       hipblasOperation_t transA,
-                                                       hipblasOperation_t transB,
-                                                       int                m,
-                                                       int                n,
-                                                       int                k,
-                                                       const rocblas_half* alpha,
-                                                       const rocblas_half* A,
-                                                       int                lda,
-                                                       int                bsa,
-                                                       const rocblas_half* B,
-                                                       int                ldb,
-                                                       int                bsb,
-                                                       const rocblas_half* beta,
-                                                       rocblas_half*       C,
-                                                       int                ldc,
-                                                       int                bsc,
-                                                       int                batch_count)
-{
-
-    return hipblasHgemmStridedBatched(handle,
-                                      transA,
-                                      transB,
-                                      m,
-                                      n,
-                                      k,
-                                      reinterpret_cast<const hipblasHalf *>(alpha),
-                                      reinterpret_cast<const hipblasHalf *>(A),
-                                      lda,
-                                      bsa,
-                                      reinterpret_cast<const hipblasHalf *>(B),
-                                      ldb,
-                                      bsb,
-                                      reinterpret_cast<const hipblasHalf *>(beta),
-                                      reinterpret_cast<hipblasHalf *>(C),
-                                      ldc,
-                                      bsc,
-                                      batch_count);
-}
-
-template <>
-hipblasStatus_t hipblasGemmStridedBatched<float>(hipblasHandle_t    handle,
-                                                 hipblasOperation_t transA,
-                                                 hipblasOperation_t transB,
-                                                 int                m,
-                                                 int                n,
-                                                 int                k,
-                                                 const float*       alpha,
-                                                 const float*       A,
-                                                 int                lda,
-                                                 int                bsa,
-                                                 const float*       B,
-                                                 int                ldb,
-                                                 int                bsb,
-                                                 const float*       beta,
-                                                 float*             C,
-                                                 int                ldc,
-                                                 int                bsc,
-                                                 int                batch_count)
-{
-
-    return hipblasSgemmStridedBatched(handle,
-                                      transA,
-                                      transB,
-                                      m,
-                                      n,
-                                      k,
-                                      alpha,
-                                      A,
-                                      lda,
-                                      bsa,
-                                      B,
-                                      ldb,
-                                      bsb,
-                                      beta,
-                                      C,
-                                      ldc,
-                                      bsc,
-                                      batch_count);
-}
-
-template <>
-hipblasStatus_t hipblasGemmStridedBatched<double>(hipblasHandle_t    handle,
-                                                  hipblasOperation_t transA,
-                                                  hipblasOperation_t transB,
-                                                  int                m,
-                                                  int                n,
-                                                  int                k,
-                                                  const double*      alpha,
-                                                  const double*      A,
-                                                  int                lda,
-                                                  int                bsa,
-                                                  const double*      B,
-                                                  int                ldb,
-                                                  int                bsb,
-                                                  const double*      beta,
-                                                  double*            C,
-                                                  int                ldc,
-                                                  int                bsc,
-                                                  int                batch_count)
-{
-
-    return hipblasDgemmStridedBatched(handle,
-                                      transA,
-                                      transB,
-                                      m,
-                                      n,
-                                      k,
-                                      alpha,
-                                      A,
-                                      lda,
-                                      bsa,
-                                      B,
-                                      ldb,
-                                      bsb,
-                                      beta,
-                                      C,
-                                      ldc,
-                                      bsc,
-                                      batch_count);
-}
-
-#endif
-
-// gemm
-template <typename T>
-static rocblas_status (*rocblas_gemm)(rocblas_handle    handle,
-                               rocblas_operation transA,
-                               rocblas_operation transB,
-                               rocblas_int       m,
-                               rocblas_int       n,
-                               rocblas_int       k,
-                               const T*          alpha,
-                               const T*          A,
-                               rocblas_int       lda,
-                               const T*          B,
-                               rocblas_int       ldb,
-                               const T*          beta,
-                               T*                C,
-                               rocblas_int       ldc);
-
-template <>
-ROCBLAS_CLANG_STATIC constexpr auto rocblas_gemm<rocblas_half> = rocblas_hgemm;
-
-template <>
-ROCBLAS_CLANG_STATIC constexpr auto rocblas_gemm<float> = rocblas_sgemm;
-
-template <>
-ROCBLAS_CLANG_STATIC constexpr auto rocblas_gemm<double> = rocblas_dgemm;
-
-// gemm_strided_batched
-template <typename T>
-static rocblas_status (*rocblas_gemm_strided_batched)(rocblas_handle    handle,
-                                               rocblas_operation transA,
-                                               rocblas_operation transB,
-                                               rocblas_int       m,
-                                               rocblas_int       n,
-                                               rocblas_int       k,
-                                               const T*          alpha,
-                                               const T*          A,
-                                               rocblas_int       lda,
-                                               rocblas_stride    bsa,
-                                               const T*          B,
-                                               rocblas_int       ldb,
-                                               rocblas_stride    bsb,
-                                               const T*          beta,
-                                               T*                C,
-                                               rocblas_int       ldc,
-                                               rocblas_stride    bsc,
-                                               rocblas_int       batch_count);
-
-template <>
-ROCBLAS_CLANG_STATIC constexpr auto rocblas_gemm_strided_batched<rocblas_half> = rocblas_hgemm_strided_batched;
-
-template <>
-ROCBLAS_CLANG_STATIC constexpr auto rocblas_gemm_strided_batched<float> = rocblas_sgemm_strided_batched;
-
-template <>
-ROCBLAS_CLANG_STATIC constexpr auto rocblas_gemm_strided_batched<double> = rocblas_dgemm_strided_batched;
+// #endif
 
 /* ============================================================================================ */
 // Random number generator
-using rocblas_rng_t = std::mt19937;
-extern rocblas_rng_t rocblas_rng, rocblas_seed;
-
-rocblas_rng_t rocblas_rng, rocblas_seed;
 
 // Reset the seed (mainly to ensure repeatability of failures in a given suite)
 inline void rocblas_seedrand()
@@ -1386,40 +969,40 @@ public:
         return random_nan_data<float, uint32_t, 23, 8>();
     }
 
-    // Random NaN half (non-template rocblas_half takes precedence over integer template above)
-    explicit operator rocblas_half()
+    // Random NaN half (non-template driver_half takes precedence over integer template above)
+    explicit operator driver_half()
     {
-        return random_nan_data<rocblas_half, uint16_t, 10, 5>();
+        return random_nan_data<driver_half, uint16_t, 10, 5>();
     }
 
     // Random NaN bfloat16
-    explicit operator rocblas_bfloat16()
+    explicit operator driver_bfloat16()
     {
-        return random_nan_data<rocblas_bfloat16, uint16_t, 7, 8>();
+        return random_nan_data<driver_bfloat16, uint16_t, 7, 8>();
     }
 
-    explicit operator rocblas_float_complex()
-    {
-        return {float(*this), float(*this)};
-    }
+    // explicit operator rocblas_float_complex()
+    // {
+    //     return {float(*this), float(*this)};
+    // }
 
-    explicit operator rocblas_double_complex()
-    {
-        return {double(*this), double(*this)};
-    }
+    // explicit operator rocblas_double_complex()
+    // {
+    //     return {double(*this), double(*this)};
+    // }
 };
 
 /* ============================================================================================ */
 // Helper function to truncate float to bfloat16
 
-inline __host__ rocblas_bfloat16 float_to_bfloat16_truncate(float val)
+inline __host__ driver_bfloat16 float_to_bfloat16_truncate(float val)
 {
     union
     {
         float    fp32;
         uint32_t int32;
     } u = {val};
-    rocblas_bfloat16 ret;
+    driver_bfloat16 ret;
     ret.data = uint16_t(u.int32 >> 16);
     if((u.int32 & 0x7fff0000) == 0x7f800000 && u.int32 & 0xffff)
         ret.data |= 1; // Preserve signaling NaN
@@ -1448,11 +1031,11 @@ inline bool rocblas_isnan(const T& arg)
     return rocblas_isnan(std::real(arg)) || rocblas_isnan(std::imag(arg));
 }
 
-inline bool rocblas_isnan(rocblas_half arg)
+inline bool rocblas_isnan(driver_half arg)
 {
     union
     {
-        rocblas_half fp;
+        driver_half fp;
         uint16_t     data;
     } x = {arg};
     return (~x.data & 0x7c00) == 0 && (x.data & 0x3ff) != 0;
@@ -1468,11 +1051,11 @@ inline T negate(T x)
 }
 
 template <>
-inline rocblas_half negate(rocblas_half arg)
+inline driver_half negate(driver_half arg)
 {
     union
     {
-        rocblas_half fp;
+        driver_half fp;
         uint16_t     data;
     } x = {arg};
 
@@ -1481,7 +1064,7 @@ inline rocblas_half negate(rocblas_half arg)
 }
 
 template <>
-inline rocblas_bfloat16 negate(rocblas_bfloat16 x)
+inline driver_bfloat16 negate(driver_bfloat16 x)
 {
     x.data ^= 0x8000;
     return x;
@@ -1490,51 +1073,66 @@ inline rocblas_bfloat16 negate(rocblas_bfloat16 x)
 /* ============================================================================================ */
 /* generate random number :*/
 
-/*! \brief  generate a random number in range [1,2,3,4,5,6,7,8,9,10] */
-template <typename T>
-inline T random_generator()
-{
-    return std::uniform_int_distribution<int>(1, 10)(rocblas_rng);
-}
+// /*! \brief  generate a random number in range [1,2,3,4,5,6,7,8,9,10] */
+// template <typename T>
+// inline T random_generator()
+// {
+//     return std::uniform_int_distribution<int>(1, 10)(rocblas_rng);
+// }
 
-// for rocblas_float_complex, generate two random ints (same behaviour as for floats)
-template <>
-inline rocblas_float_complex random_generator<rocblas_float_complex>()
-{
-    return {float(std::uniform_int_distribution<int>(1, 10)(rocblas_rng)),
-            float(std::uniform_int_distribution<int>(1, 10)(rocblas_rng))};
-};
+// // for rocblas_float_complex, generate two random ints (same behaviour as for floats)
+// template <>
+// inline rocblas_float_complex random_generator<rocblas_float_complex>()
+// {
+//     return {float(std::uniform_int_distribution<int>(1, 10)(rocblas_rng)),
+//             float(std::uniform_int_distribution<int>(1, 10)(rocblas_rng))};
+// };
 
-// for rocblas_double_complex, generate two random ints (same behaviour as for doubles)
-template <>
-inline rocblas_double_complex random_generator<rocblas_double_complex>()
-{
-    return {double(std::uniform_int_distribution<int>(1, 10)(rocblas_rng)),
-            double(std::uniform_int_distribution<int>(1, 10)(rocblas_rng))};
-};
+// // for rocblas_double_complex, generate two random ints (same behaviour as for doubles)
+// template <>
+// inline rocblas_double_complex random_generator<rocblas_double_complex>()
+// {
+//     return {double(std::uniform_int_distribution<int>(1, 10)(rocblas_rng)),
+//             double(std::uniform_int_distribution<int>(1, 10)(rocblas_rng))};
+// };
 
-// for rocblas_half, generate float, and convert to rocblas_half
+// // for driver_half, generate float, and convert to driver_half
+// /*! \brief  generate a random number in range [-2,-1,0,1,2] */
+// template <>
+// inline driver_half random_generator<driver_half>()
+// {
+//     return float_to_bfloat16_truncate(std::uniform_int_distribution<int>(-2, 2)(rocblas_rng)).data;
+// };
+
+// template <>
+// inline driver_bfloat16 random_generator<driver_bfloat16>()
+// {
+//     return driver_bfloat16((float)std::uniform_int_distribution<int>(-2, 2)(rocblas_rng));
+// };
+
+// for driver_bfloat16, generate float, and convert to driver_bfloat16
 /*! \brief  generate a random number in range [-2,-1,0,1,2] */
-template <>
-inline rocblas_half random_generator<rocblas_half>()
-{
-    return float_to_bfloat16_truncate(std::uniform_int_distribution<int>(-2, 2)(rocblas_rng));
-};
+// #ifdef HIPBLAS
+// // template <>
+// // inline driver_bfloat16 random_generator<driver_bfloat16>()
+// // {
+// //     return driver_bfloat16(__float2bfloat16(std::uniform_int_distribution<int>(-2, 2)(rocblas_rng)));
+// // };
+// #else
+// template <>
+// inline driver_bfloat16 random_generator<driver_bfloat16>()
+// {
+//     return driver_bfloat16(std::uniform_int_distribution<int>(-2, 2)(rocblas_rng));
+// };
+// #endif
 
-// for rocblas_bfloat16, generate float, and convert to rocblas_bfloat16
-/*! \brief  generate a random number in range [-2,-1,0,1,2] */
-template <>
-inline rocblas_bfloat16 random_generator<rocblas_bfloat16>()
-{
-    return rocblas_bfloat16(std::uniform_int_distribution<int>(-2, 2)(rocblas_rng));
-};
 
-/*! \brief  generate a random number in range [1,2,3] */
-template <>
-inline int8_t random_generator<int8_t>()
-{
-    return std::uniform_int_distribution<int8_t>(1, 3)(rocblas_rng);
-};
+// /*! \brief  generate a random number in range [1,2,3] */
+// template <>
+// inline int8_t random_generator<int8_t>()
+// {
+//     return std::uniform_int_distribution<int8_t>(1, 3)(rocblas_rng);
+// };
 
 /*! \brief  generate a random number in HPL-like [-0.5,0.5] doubles  */
 template <typename T>
@@ -1543,11 +1141,19 @@ inline T random_hpl_generator()
     return std::uniform_real_distribution<double>(-0.5, 0.5)(rocblas_rng);
 }
 
+#ifdef HIPBLAS
+// template <>
+// inline driver_bfloat16 random_hpl_generator()
+// {
+//     return driver_bfloat16(__double2bfloat16(std::uniform_real_distribution<double>(-0.5, 0.5)(rocblas_rng)));
+// }
+#else
 template <>
-inline rocblas_bfloat16 random_hpl_generator()
+inline driver_bfloat16 random_hpl_generator()
 {
-    return rocblas_bfloat16(std::uniform_real_distribution<double>(-0.5, 0.5)(rocblas_rng));
+    return driver_bfloat16(std::uniform_real_distribution<double>(-0.5, 0.5)(rocblas_rng));
 }
+#endif
 
 /* ============================================================================================ */
 /*! \brief  base-class to allocate/deallocate device memory */
@@ -1698,7 +1304,7 @@ public:
     //! @param inc The increment.
     //! @remark Must wrap constructor and destructor in functions to allow Google Test macros to work
     //!
-    explicit device_vector(rocblas_int n, rocblas_int inc)
+    explicit device_vector(int n, int inc)
         : d_vector<T, PAD, U>(n * std::abs(inc))
         , m_n(n)
         , m_inc(inc)
@@ -1731,7 +1337,7 @@ public:
     //!
     //! @brief Returns the length of the vector.
     //!
-    rocblas_int n() const
+    int n() const
     {
         return this->m_n;
     }
@@ -1739,7 +1345,7 @@ public:
     //!
     //! @brief Returns the increment of the vector.
     //!
-    rocblas_int inc() const
+    int inc() const
     {
         return this->m_inc;
     }
@@ -1747,7 +1353,7 @@ public:
     //!
     //! @brief Returns the batch count (always 1).
     //!
-    rocblas_int batch_count() const
+    int batch_count() const
     {
         return 1;
     }
@@ -1755,7 +1361,7 @@ public:
     //!
     //! @brief Returns the stride (out of context, always 0)
     //!
-    rocblas_stride stride() const
+    int64_t stride() const
     {
         return 0;
     }
@@ -1802,8 +1408,8 @@ public:
 
 private:
     size_t      m_size{};
-    rocblas_int m_n{};
-    rocblas_int m_inc{};
+    int m_n{};
+    int m_inc{};
     T*          m_data{};
 };
 
@@ -1820,7 +1426,7 @@ struct host_vector : std::vector<T>
     //!
     //! @brief Constructor.
     //!
-    host_vector(rocblas_int n, rocblas_int inc)
+    host_vector(int n, int inc)
         : std::vector<T>(n * std::abs(inc))
         , m_n(n)
         , m_inc(inc)
@@ -1857,7 +1463,7 @@ struct host_vector : std::vector<T>
     //!
     //! @brief Returns the length of the vector.
     //!
-    rocblas_int n() const
+    int n() const
     {
         return this->m_n;
     }
@@ -1865,7 +1471,7 @@ struct host_vector : std::vector<T>
     //!
     //! @brief Returns the increment of the vector.
     //!
-    rocblas_int inc() const
+    int inc() const
     {
         return this->m_inc;
     }
@@ -1873,7 +1479,7 @@ struct host_vector : std::vector<T>
     //!
     //! @brief Returns the batch count (always 1).
     //!
-    rocblas_int batch_count() const
+    int batch_count() const
     {
         return 1;
     }
@@ -1881,7 +1487,7 @@ struct host_vector : std::vector<T>
     //!
     //! @brief Returns the stride (out of context, always 0)
     //!
-    rocblas_stride stride() const
+    int64_t stride() const
     {
         return 0;
     }
@@ -1896,8 +1502,8 @@ struct host_vector : std::vector<T>
     }
 
 private:
-    rocblas_int m_n{};
-    rocblas_int m_inc{};
+    int m_n{};
+    int m_inc{};
 };
 
 /* ============================================================================================ */
@@ -1908,7 +1514,7 @@ private:
 // Initialize vector with random values
 template <typename T>
 inline void rocblas_init(
-    std::vector<T>& A, size_t M, size_t N, size_t lda, rocblas_stride stride = 0, size_t batch_count = 1)
+    std::vector<T>& A, size_t M, size_t N, size_t lda, int64_t stride = 0, size_t batch_count = 1)
 {
     for(size_t i_batch = 0; i_batch < batch_count; i_batch++)
         for(size_t i = 0; i < M; ++i)
@@ -1916,15 +1522,15 @@ inline void rocblas_init(
                 A[i + j * lda + i_batch * stride] = random_generator<T>();
 }
 
-template <typename T>
-inline void rocblas_init_sin(
-    std::vector<T>& A, size_t M, size_t N, size_t lda, rocblas_stride stride = 0, size_t batch_count = 1)
-{
-    for(size_t i_batch = 0; i_batch < batch_count; i_batch++)
-        for(size_t i = 0; i < M; ++i)
-            for(size_t j = 0; j < N; ++j)
-                A[i + j * lda + i_batch * stride] = T(sin(i + j * lda + i_batch * stride));
-}
+// template <typename T>
+// inline void rocblas_init_sin(
+//     std::vector<T>& A, size_t M, size_t N, size_t lda, int64_t stride = 0, size_t batch_count = 1)
+// {
+//     for(size_t i_batch = 0; i_batch < batch_count; i_batch++)
+//         for(size_t i = 0; i < M; ++i)
+//             for(size_t j = 0; j < N; ++j)
+//                 A[i + j * lda + i_batch * stride] = T(sin(i + j * lda + i_batch * stride));
+// }
 
 // Initialize matrix so adjacent entries have alternating sign.
 // In gemm if either A or B are initialized with alernating
@@ -1935,7 +1541,7 @@ inline void rocblas_init_sin(
 // mantissa 10 bits.
 template <typename T>
 inline void rocblas_init_alternating_sign(
-    std::vector<T>& A, size_t M, size_t N, size_t lda, rocblas_stride stride = 0, size_t batch_count = 1)
+    std::vector<T>& A, size_t M, size_t N, size_t lda, int64_t stride = 0, size_t batch_count = 1)
 {
     for(size_t i_batch = 0; i_batch < batch_count; i_batch++)
         for(size_t i = 0; i < M; ++i)
@@ -1946,15 +1552,15 @@ inline void rocblas_init_alternating_sign(
             }
 }
 
-template <typename T>
-inline void rocblas_init_cos(
-    std::vector<T>& A, size_t M, size_t N, size_t lda, rocblas_stride stride = 0, size_t batch_count = 1)
-{
-    for(size_t i_batch = 0; i_batch < batch_count; i_batch++)
-        for(size_t i = 0; i < M; ++i)
-            for(size_t j = 0; j < N; ++j)
-                A[i + j * lda + i_batch * stride] = T(cos(i + j * lda + i_batch * stride));
-}
+// template <typename T>
+// inline void rocblas_init_cos(
+//     std::vector<T>& A, size_t M, size_t N, size_t lda, int64_t stride = 0, size_t batch_count = 1)
+// {
+//     for(size_t i_batch = 0; i_batch < batch_count; i_batch++)
+//         for(size_t i = 0; i < M; ++i)
+//             for(size_t j = 0; j < N; ++j)
+//                 A[i + j * lda + i_batch * stride] = T(cos(i + j * lda + i_batch * stride));
+// }
 
 /*! \brief  symmetric matrix initialization: */
 // for real matrix only
@@ -1991,7 +1597,7 @@ inline void rocblas_init_hermitian(std::vector<T>& A, size_t N, size_t lda)
 // Initialize vector with HPL-like random values
 template <typename T>
 inline void rocblas_init_hpl(
-    std::vector<T>& A, size_t M, size_t N, size_t lda, rocblas_stride stride = 0, size_t batch_count = 1)
+    std::vector<T>& A, size_t M, size_t N, size_t lda, int64_t stride = 0, size_t batch_count = 1)
 {
     for(size_t i_batch = 0; i_batch < batch_count; i_batch++)
         for(size_t i = 0; i < M; ++i)
@@ -2011,7 +1617,7 @@ inline void rocblas_init_nan(T* A, size_t N)
 
 template <typename T>
 inline void rocblas_init_nan(
-    std::vector<T>& A, size_t M, size_t N, size_t lda, rocblas_stride stride = 0, size_t batch_count = 1)
+    std::vector<T>& A, size_t M, size_t N, size_t lda, int64_t stride = 0, size_t batch_count = 1)
 {
     for(size_t i_batch = 0; i_batch < batch_count; i_batch++)
         for(size_t i = 0; i < M; ++i)
@@ -2024,7 +1630,7 @@ inline void rocblas_init_nan(
 
 template <typename T>
 inline void rocblas_packInt8(
-    std::vector<T>& A, size_t M, size_t N, size_t batch_count, size_t lda, rocblas_stride stride_a)
+    std::vector<T>& A, size_t M, size_t N, size_t batch_count, size_t lda, int64_t stride_a)
 {
     if(N % 4 != 0)
         std::cerr << "ERROR: dimension must be a multiple of 4 in order to pack" << std::endl;
@@ -2064,293 +1670,80 @@ inline void rocblas_packInt8(std::vector<T>& A, size_t M, size_t N, size_t lda)
 }
 
 /* \brief floating point counts of GEMM */
-template <typename T>
-constexpr double gemm_gflop_count(rocblas_int m, rocblas_int n, rocblas_int k)
+template <typename T = float>
+constexpr double gemm_gflop_count(int m, int n, int k)
 {
     return (2.0 * m * n * k) / 1e9;
 }
 
-template <>
-constexpr double
-    gemm_gflop_count<rocblas_float_complex>(rocblas_int m, rocblas_int n, rocblas_int k)
+// template <>
+// constexpr double
+//     gemm_gflop_count<rocblas_float_complex>(int m, int n, int k)
+// {
+//     return (8.0 * m * n * k) / 1e9;
+// }
+
+// template <>
+// constexpr double
+//     gemm_gflop_count<rocblas_double_complex>(int m, int n, int k)
+// {
+//     return (8.0 * m * n * k) / 1e9;
+// }
+
+typedef enum driver_initialization_
 {
-    return (8.0 * m * n * k) / 1e9;
-}
+    driver_initialization_random_int    = 111,
+    driver_initialization_random_narrow = 222,
+    driver_initialization_random_broad  = 333,
+    driver_initialization_random_full   = 444,
+    driver_initialization_trig_float    = 555,
+    driver_initialization_hpl           = 666,
+    driver_initialization_const         = 777,
+    driver_initialization_file          = 888,
+} driver_initialization;
 
-template <>
-constexpr double
-    gemm_gflop_count<rocblas_double_complex>(rocblas_int m, rocblas_int n, rocblas_int k)
-{
-    return (8.0 * m * n * k) / 1e9;
-}
-
-typedef enum rocblas_initialization_
-{
-    rocblas_initialization_random_int    = 111,
-    rocblas_initialization_random_narrow = 222,
-    rocblas_initialization_random_broad  = 333,
-    rocblas_initialization_random_full   = 444,
-    rocblas_initialization_trig_float    = 555,
-    rocblas_initialization_hpl           = 666,
-    rocblas_initialization_const         = 777,
-    rocblas_initialization_file          = 888,
-} rocblas_initialization;
-
-/* ============================================================================================ */
-/*  Convert rocblas constants to lapack char. */
-
-constexpr auto rocblas2char_operation(rocblas_operation value)
-{
-    switch(value)
-    {
-    case rocblas_operation_none:
-        return 'N';
-    case rocblas_operation_transpose:
-        return 'T';
-    case rocblas_operation_conjugate_transpose:
-        return 'C';
-    }
-    return '\0';
-}
-
-constexpr auto rocblas2char_fill(rocblas_fill value)
-{
-    switch(value)
-    {
-    case rocblas_fill_upper:
-        return 'U';
-    case rocblas_fill_lower:
-        return 'L';
-    case rocblas_fill_full:
-        return 'F';
-    }
-    return '\0';
-}
-
-constexpr auto rocblas2char_diagonal(rocblas_diagonal value)
-{
-    switch(value)
-    {
-    case rocblas_diagonal_unit:
-        return 'U';
-    case rocblas_diagonal_non_unit:
-        return 'N';
-    }
-    return '\0';
-}
-
-constexpr auto rocblas2char_side(rocblas_side value)
-{
-    switch(value)
-    {
-    case rocblas_side_left:
-        return 'L';
-    case rocblas_side_right:
-        return 'R';
-    case rocblas_side_both:
-        return 'B';
-    }
-    return '\0';
-}
-
-// return precision string for rocblas_datatype
-constexpr auto rocblas_datatype2string(rocblas_datatype type)
-{
-    switch(type)
-    {
-    case rocblas_datatype_f16_r:
-        return "f16_r";
-    case rocblas_datatype_f32_r:
-        return "f32_r";
-    case rocblas_datatype_f64_r:
-        return "f64_r";
-    case rocblas_datatype_f16_c:
-        return "f16_k";
-    case rocblas_datatype_f32_c:
-        return "f32_c";
-    case rocblas_datatype_f64_c:
-        return "f64_c";
-    case rocblas_datatype_i8_r:
-        return "i8_r";
-    case rocblas_datatype_u8_r:
-        return "u8_r";
-    case rocblas_datatype_i32_r:
-        return "i32_r";
-    case rocblas_datatype_u32_r:
-        return "u32_r";
-    case rocblas_datatype_i8_c:
-        return "i8_c";
-    case rocblas_datatype_u8_c:
-        return "u8_c";
-    case rocblas_datatype_i32_c:
-        return "i32_c";
-    case rocblas_datatype_u32_c:
-        return "u32_c";
-    case rocblas_datatype_bf16_r:
-        return "bf16_r";
-    case rocblas_datatype_bf16_c:
-        return "bf16_c";
-    default:
-        return "invalid";
-    }
-}
-
-constexpr auto rocblas_initialization2string(rocblas_initialization init)
+constexpr auto driver_initialization2string(driver_initialization init)
 {
     switch(init)
     {
-    case rocblas_initialization_random_int:
+    case driver_initialization_random_int:
         return "rand_int";
-    case rocblas_initialization_random_narrow:
+    case driver_initialization_random_narrow:
         return "rand_narrow";
-    case rocblas_initialization_random_broad:
+    case driver_initialization_random_broad:
         return "rand_broad";
-    case rocblas_initialization_random_full:
+    case driver_initialization_random_full:
         return "rand_full";
-    case rocblas_initialization_trig_float:
+    case driver_initialization_trig_float:
         return "trig_float";
-    case rocblas_initialization_hpl:
+    case driver_initialization_hpl:
         return "hpl";
-    case rocblas_initialization_const:
+    case driver_initialization_const:
         return "const";
-    case rocblas_initialization_file:
+    case driver_initialization_file:
         return "file";
     default:
         return "invalid";
     }
 }
 
-/* ============================================================================================ */
-/*  Convert lapack char constants to rocblas type. */
-
-constexpr rocblas_operation char2rocblas_operation(char value)
-{
-    switch(value)
-    {
-    case 'N':
-    case 'n':
-        return rocblas_operation_none;
-    case 'T':
-    case 't':
-        return rocblas_operation_transpose;
-    case 'C':
-    case 'c':
-        return rocblas_operation_conjugate_transpose;
-    default:
-        return static_cast<rocblas_operation>(-1);
-    }
-}
-
-constexpr rocblas_fill char2rocblas_fill(char value)
-{
-    switch(value)
-    {
-    case 'U':
-    case 'u':
-        return rocblas_fill_upper;
-    case 'L':
-    case 'l':
-        return rocblas_fill_lower;
-    default:
-        return static_cast<rocblas_fill>(-1);
-    }
-}
-
-constexpr rocblas_diagonal char2rocblas_diagonal(char value)
-{
-    switch(value)
-    {
-    case 'U':
-    case 'u':
-        return rocblas_diagonal_unit;
-    case 'N':
-    case 'n':
-        return rocblas_diagonal_non_unit;
-    default:
-        return static_cast<rocblas_diagonal>(-1);
-    }
-}
-
-constexpr rocblas_side char2rocblas_side(char value)
-{
-    switch(value)
-    {
-    case 'L':
-    case 'l':
-        return rocblas_side_left;
-    case 'R':
-    case 'r':
-        return rocblas_side_right;
-    default:
-        return static_cast<rocblas_side>(-1);
-    }
-}
-
-inline rocblas_initialization string2rocblas_initialization(const std::string& value)
+inline driver_initialization string2driver_initialization(const std::string& value)
 {
     // clang-format off
     return
-        value == "rand_int"   ? rocblas_initialization_random_int :
-        value == "rand_narrow" ? rocblas_initialization_random_narrow:
-        value == "rand_broad" ? rocblas_initialization_random_broad:
-        value == "rand_full" ? rocblas_initialization_random_full:
-        value == "trig_float" ? rocblas_initialization_trig_float :
-        value == "hpl"        ? rocblas_initialization_hpl        :
-        value == "const"        ? rocblas_initialization_const        :
-        value == "file"        ? rocblas_initialization_file      :
+        value == "rand_int"   ? driver_initialization_random_int :
+        value == "rand_narrow" ? driver_initialization_random_narrow:
+        value == "rand_broad" ? driver_initialization_random_broad:
+        value == "rand_full" ? driver_initialization_random_full:
+        value == "trig_float" ? driver_initialization_trig_float :
+        value == "hpl"        ? driver_initialization_hpl        :
+        value == "const"        ? driver_initialization_const        :
+        value == "file"        ? driver_initialization_file      :
         
-        static_cast<rocblas_initialization>(-1);
+        static_cast<driver_initialization>(-1);
     // clang-format on
 }
 
-inline rocblas_datatype string2rocblas_datatype(const std::string& value)
-{
-    // clang-format off
-    return
-        value == "f16_r" || value == "h" ? rocblas_datatype_f16_r :
-        value == "f32_r" || value == "s" ? rocblas_datatype_f32_r :
-        value == "f64_r" || value == "d" ? rocblas_datatype_f64_r :
-        value == "bf16_r"                ? rocblas_datatype_bf16_r :
-        value == "f16_c"                 ? rocblas_datatype_f16_c :
-        value == "f32_c" || value == "c" ? rocblas_datatype_f32_c :
-        value == "f64_c" || value == "z" ? rocblas_datatype_f64_c :
-        value == "bf16_c"                ? rocblas_datatype_bf16_c :
-        value == "i8_r"                  ? rocblas_datatype_i8_r  :
-        value == "i32_r"                 ? rocblas_datatype_i32_r :
-        value == "i8_c"                  ? rocblas_datatype_i8_c  :
-        value == "i32_c"                 ? rocblas_datatype_i32_c :
-        value == "u8_r"                  ? rocblas_datatype_u8_r  :
-        value == "u32_r"                 ? rocblas_datatype_u32_r :
-        value == "u8_c"                  ? rocblas_datatype_u8_c  :
-        value == "u32_c"                 ? rocblas_datatype_u32_c :
-        static_cast<rocblas_datatype>(-1);
-    // clang-format on
-}
-
-class rocblas_local_handle
-{
-    rocblas_handle handle;
-
-public:
-    rocblas_local_handle()
-    {
-        rocblas_create_handle(&handle);
-    }
-    ~rocblas_local_handle()
-    {
-        rocblas_destroy_handle(handle);
-    }
-
-    // Allow rocblas_local_handle to be used anywhere rocblas_handle is expected
-    operator rocblas_handle&()
-    {
-        return handle;
-    }
-    operator const rocblas_handle&() const
-    {
-        return handle;
-    }
-};
 
 class Barrier {
 public:
@@ -2415,25 +1808,25 @@ private:
 
 struct Arguments
 {
-    rocblas_int M;
-    rocblas_int N;
-    rocblas_int K;
+    int M;
+    int N;
+    int K;
 
-    rocblas_int lda;
-    rocblas_int ldb;
-    rocblas_int ldc;
-    rocblas_int ldd;
+    int lda;
+    int ldb;
+    int ldc;
+    int ldd;
 
-    rocblas_datatype a_type;
-    rocblas_datatype b_type;
-    rocblas_datatype c_type;
-    rocblas_datatype d_type;
-    rocblas_datatype compute_type;
+    driver_type a_type;
+    driver_type b_type;
+    driver_type c_type;
+    driver_type d_type;
+    driver_type compute_type;
 
-    rocblas_int incx;
-    rocblas_int incy;
-    rocblas_int incd;
-    rocblas_int incb;
+    int incx;
+    int incy;
+    int incd;
+    int incb;
 
     double alpha;
     double alphai;
@@ -2446,24 +1839,24 @@ struct Arguments
     char uplo;
     char diag;
 
-    rocblas_int batch_count;
+    int batch_count;
 
-    rocblas_stride stride_a; //  stride_a > transA == 'N' ? lda * K : lda * M
-    rocblas_stride stride_b; //  stride_b > transB == 'N' ? ldb * N : ldb * K
-    rocblas_stride stride_c; //  stride_c > ldc * N
-    rocblas_stride stride_d; //  stride_d > ldd * N
+    int64_t stride_a; //  stride_a > transA == 'N' ? lda * K : lda * M
+    int64_t stride_b; //  stride_b > transB == 'N' ? ldb * N : ldb * K
+    int64_t stride_c; //  stride_c > ldc * N
+    int64_t stride_d; //  stride_d > ldd * N
 
     double initVal;
 
-    rocblas_int norm_check;
-    rocblas_int unit_check;
-    rocblas_int timing;
-    rocblas_int iters;
-    rocblas_int reinit_c;
-    rocblas_int flush_gpu_cache;
-    rocblas_int c_equals_d;
-    rocblas_int time_each_iter;
-    rocblas_int tensile_timing;
+    int norm_check;
+    int unit_check;
+    int timing;
+    int iters;
+    int reinit_c;
+    int flush_gpu_cache;
+    int c_equals_d;
+    int time_each_iter;
+    int tensile_timing;
 
     uint32_t algo;
     int32_t  solution_index;
@@ -2473,7 +1866,7 @@ struct Arguments
     char name[64];
     char category[32];
 
-    rocblas_initialization initialization;
+    driver_initialization initialization;
 
     // Validate input format.
     // rocblas_gentest.py is expected to conform to this format.
@@ -2655,11 +2048,11 @@ private:
         };
 
         print("function", arg.function);
-        print("a_type", rocblas_datatype2string(arg.a_type));
-        print("b_type", rocblas_datatype2string(arg.b_type));
-        print("c_type", rocblas_datatype2string(arg.c_type));
-        print("d_type", rocblas_datatype2string(arg.d_type));
-        print("compute_type", rocblas_datatype2string(arg.compute_type));
+        print("a_type", driver_type2string(arg.a_type));
+        print("b_type", driver_type2string(arg.b_type));
+        print("c_type", driver_type2string(arg.c_type));
+        print("d_type", driver_type2string(arg.d_type));
+        print("compute_type", driver_type2string(arg.compute_type));
         print("transA", arg.transA);
         print("transB", arg.transB);
         print("M", arg.M);
@@ -2721,10 +2114,10 @@ std::string d_type;
 std::string compute_type;
 std::string initialization;
 std::string a_file, b_file, c_file, o_file;
-rocblas_int storeInitData;
-rocblas_int storeOutputData;
-rocblas_int device_id;
-rocblas_int multi_device;
+int storeInitData;
+int storeOutputData;
+int device_id;
+int multi_device;
 Barrier perfBarrier;
 Barrier memBarrier;
 Barrier memBarrier2;
@@ -2735,63 +2128,63 @@ void readArgs(int argc, char* argv[], Arguments& arg)
     desc.add_options()
         // clang-format off
     ("sizem,m",
-        po::value<rocblas_int>(&arg.M)->default_value(128),
+        po::value<int>(&arg.M)->default_value(128),
         "Specific matrix size: sizem is only applicable to BLAS-2 & BLAS-3: the number of "
         "rows or columns in matrix.")
 
     ("sizen,n",
-        po::value<rocblas_int>(&arg.N)->default_value(128),
+        po::value<int>(&arg.N)->default_value(128),
         "Specific matrix/vector size: BLAS-1: the length of the vector. BLAS-2 & "
         "BLAS-3: the number of rows or columns in matrix")
 
     ("sizek,k",
-        po::value<rocblas_int>(&arg.K)->default_value(128),
+        po::value<int>(&arg.K)->default_value(128),
         "Specific matrix size:sizek is only applicable to BLAS-3: the number of columns in "
         "A and rows in B.")
 
     ("lda",
-        po::value<rocblas_int>(&arg.lda)->default_value(128),
+        po::value<int>(&arg.lda)->default_value(128),
         "On entry, LDA specifies the first dimension of A as declared"
            "in the calling (sub) program. When  TRANSA = 'N' or 'n' then"
            "LDA must be at least  max( 1, m ), otherwise  LDA must be at"
            "least  max( 1, k )")
 
     ("ldb",
-        po::value<rocblas_int>(&arg.ldb)->default_value(128),
+        po::value<int>(&arg.ldb)->default_value(128),
         "On entry, LDB specifies the first dimension of B as declared"
            "in the calling (sub) program. When  TRANSB = 'N' or 'n' then"
            "LDB must be at least  max( 1, k ), otherwise  LDB must be at"
            "least  max( 1, n ).")
 
     ("ldc",
-        po::value<rocblas_int>(&arg.ldc)->default_value(128),
+        po::value<int>(&arg.ldc)->default_value(128),
         "On entry, LDC specifies the first dimension of C as declared"
            "in  the  calling  (sub)  program.   LDC  must  be  at  least"
            "max( 1, m ).")
 
     ("ldd",
-        po::value<rocblas_int>(&arg.ldd)->default_value(128),
+        po::value<int>(&arg.ldd)->default_value(128),
         "On entry, LDD specifies the first dimension of D as desired"
            "in  the  calling  (sub)  program.   LDD  must  be  at  least"
            "max( 1, m ).")
 
     ("stride_a",
-        po::value<rocblas_stride>(&arg.stride_a)->default_value(128*128),
+        po::value<int64_t>(&arg.stride_a)->default_value(128*128),
         "Specific stride of strided_batched matrix A, is only applicable to strided batched"
         "BLAS-2 and BLAS-3: second dimension * leading dimension.")
 
     ("stride_b",
-        po::value<rocblas_stride>(&arg.stride_b)->default_value(128*128),
+        po::value<int64_t>(&arg.stride_b)->default_value(128*128),
         "Specific stride of strided_batched matrix B, is only applicable to strided batched"
         "BLAS-2 and BLAS-3: second dimension * leading dimension.")
 
     ("stride_c",
-        po::value<rocblas_stride>(&arg.stride_c)->default_value(128*128),
+        po::value<int64_t>(&arg.stride_c)->default_value(128*128),
         "Specific stride of strided_batched matrix C, is only applicable to strided batched"
         "BLAS-2 and BLAS-3: second dimension * leading dimension.")
 
     ("stride_d",
-        po::value<rocblas_stride>(&arg.stride_d)->default_value(128*128),
+        po::value<int64_t>(&arg.stride_d)->default_value(128*128),
         "Specific stride of strided_batched matrix D, is only applicable to strided batched"
         "BLAS_EX: second dimension * leading dimension.")
 
@@ -2838,12 +2231,12 @@ void readArgs(int argc, char* argv[], Arguments& arg)
         "Options: rand_int, rand_narrow, rand_broad, rand_full, trig_float, hpl, const, file")
 
     ("storeInitData,s",
-        po::value<rocblas_int>(&storeInitData)->default_value(0),
+        po::value<int>(&storeInitData)->default_value(0),
         "Dump initialization data in to bin files? Note: Storing is not done when loading from bin files. "
         "Please specify file names using --x_file flags 0 = No, 1 = Yes (default: No)")
 
     ("storeOutputData,o",
-        po::value<rocblas_int>(&storeOutputData)->default_value(0),
+        po::value<int>(&storeOutputData)->default_value(0),
         "Dump results matrix in to bin files?"
         "Please specify file names using --o_file flag 0 = No, 1 = Yes (default: No) "
         "Note that multiple iterations will change results unless reinit_c flag is specified")
@@ -2873,39 +2266,39 @@ void readArgs(int argc, char* argv[], Arguments& arg)
         "N = no transpose, T = transpose, C = conjugate transpose")
 
     ("batch",
-        po::value<rocblas_int>(&arg.batch_count)->default_value(1),
+        po::value<int>(&arg.batch_count)->default_value(1),
         "Number of matrices. Only applicable to batched routines") // xtrsm xtrsm_ex xtrmm xgemm
 
     ("verify,v",
-        po::value<rocblas_int>(&arg.norm_check)->default_value(0),
+        po::value<int>(&arg.norm_check)->default_value(0),
         "Validate GPU results with CPU? 0 = No, 1 = Yes (default: No)")
 
     ("unit_check,u",
-        po::value<rocblas_int>(&arg.unit_check)->default_value(0),
+        po::value<int>(&arg.unit_check)->default_value(0),
         "Unit Check? 0 = No, 1 = Yes (default: No)")
 
     ("iters,i",
-        po::value<rocblas_int>(&arg.iters)->default_value(10),
+        po::value<int>(&arg.iters)->default_value(10),
         "Iterations to run inside timing loop")
     
     ("reinit_c",
-        po::value<rocblas_int>(&arg.reinit_c)->default_value(0),
+        po::value<int>(&arg.reinit_c)->default_value(0),
         "Reinitialize C between iterations? 0 = No, 1 = Yes (default: No)")
 
     ("flush_gpu_cache",
-        po::value<rocblas_int>(&arg.flush_gpu_cache)->default_value(0),
+        po::value<int>(&arg.flush_gpu_cache)->default_value(0),
         "Flush GPU L2 cache between iterations? 0 = No, 1 = Yes (default: No)")
 
     ("c_equals_d",
-        po::value<rocblas_int>(&arg.c_equals_d)->default_value(1),
+        po::value<int>(&arg.c_equals_d)->default_value(1),
         "is C equal to D? 0 = No, 1 = Yes (default: Yes)")
 
     ("time_each_iter",
-        po::value<rocblas_int>(&arg.time_each_iter)->default_value(0),
+        po::value<int>(&arg.time_each_iter)->default_value(0),
         "Explicitly time each iteration? 0 = No, 1 = Yes (default: No)")
 
     ("tensile_timing",
-        po::value<rocblas_int>(&arg.tensile_timing)->default_value(0),
+        po::value<int>(&arg.tensile_timing)->default_value(0),
         "Get kernel timing from Tensile? This sends hipEvents directly to the kernel call,"
         " eliminating overhead that may be seen for smaller launches. "
         "Will use this timing to calculate performance when enabled.\n"
@@ -2924,11 +2317,11 @@ void readArgs(int argc, char* argv[], Arguments& arg)
         "extended precision gemm flags")
 
     ("device",
-        po::value<rocblas_int>(&device_id)->default_value(0),
+        po::value<int>(&device_id)->default_value(0),
         "Set default device to be used for subsequent program runs (default: 0)")
 
     ("multi_device",
-        po::value<rocblas_int>(&multi_device)->default_value(1),
+        po::value<int>(&multi_device)->default_value(1),
         "This flag is used to specify how many devices to launch work on simultaneously (default: 1)"
         "The first x amount of devices will be used. Multiple threads will sync after setup for each device."
         "Then a rocblas call will be deployed to each device simultaneously and the longest timing duration will be pulled."
@@ -2950,42 +2343,42 @@ void readArgs(int argc, char* argv[], Arguments& arg)
     }
 
     std::transform(precision.begin(), precision.end(), precision.begin(), ::tolower);
-    auto prec = string2rocblas_datatype(precision);
-    if(prec == static_cast<rocblas_datatype>(-1))
+    auto prec = string2driver_type(precision);
+    if(prec == static_cast<driver_type>(-1))
         throw std::invalid_argument("Invalid value for --precision " + precision);
 
     if(a_type == "")
         a_type = precision;
-    arg.a_type = string2rocblas_datatype(a_type);
-    if(arg.a_type == static_cast<rocblas_datatype>(-1))
+    arg.a_type = string2driver_type(a_type);
+    if(arg.a_type == static_cast<driver_type>(-1))
         throw std::invalid_argument("Invalid value for --a_type " + a_type);
 
     if(b_type == "")
         b_type = precision;
-    arg.b_type = string2rocblas_datatype(b_type);
-    if(arg.b_type == static_cast<rocblas_datatype>(-1))
+    arg.b_type = string2driver_type(b_type);
+    if(arg.b_type == static_cast<driver_type>(-1))
         throw std::invalid_argument("Invalid value for --b_type " + b_type);
 
     if(c_type == "")
         c_type = precision;
-    arg.c_type = string2rocblas_datatype(c_type);
-    if(arg.c_type == static_cast<rocblas_datatype>(-1))
+    arg.c_type = string2driver_type(c_type);
+    if(arg.c_type == static_cast<driver_type>(-1))
         throw std::invalid_argument("Invalid value for --c_type " + c_type);
 
     if(d_type == "")
         d_type = precision;
-    arg.d_type = string2rocblas_datatype(d_type);
-    if(arg.d_type == static_cast<rocblas_datatype>(-1))
+    arg.d_type = string2driver_type(d_type);
+    if(arg.d_type == static_cast<driver_type>(-1))
         throw std::invalid_argument("Invalid value for --d_type " + d_type);
 
     if(compute_type == "")
         compute_type = precision;
-    arg.compute_type = string2rocblas_datatype(compute_type);
-    if(arg.compute_type == static_cast<rocblas_datatype>(-1))
+    arg.compute_type = string2driver_type(compute_type);
+    if(arg.compute_type == static_cast<driver_type>(-1))
         throw std::invalid_argument("Invalid value for --compute_type " + compute_type);
 
-    arg.initialization = string2rocblas_initialization(initialization);
-    if(arg.initialization == static_cast<rocblas_initialization>(-1))
+    arg.initialization = string2driver_initialization(initialization);
+    if(arg.initialization == static_cast<driver_initialization>(-1))
         throw std::invalid_argument("Invalid value for --initialization " + initialization);
 
     if(arg.M < 0)
@@ -2996,7 +2389,7 @@ void readArgs(int argc, char* argv[], Arguments& arg)
         throw std::invalid_argument("Invalid value for -k " + std::to_string(arg.K));
 
     if(arg.initialization
-       == rocblas_initialization_file) //check for files if initialization is file
+       == driver_initialization_file) //check for files if initialization is file
     {
         if(!std::ifstream(a_file))
             throw std::invalid_argument("Invalid value for --a_file " + a_file);
@@ -3005,14 +2398,14 @@ void readArgs(int argc, char* argv[], Arguments& arg)
         if(!std::ifstream(c_file))
             throw std::invalid_argument("Invalid value for --c_file " + c_file);
     }
-    else if(arg.initialization == rocblas_initialization_const && std::isnan(arg.initVal))
+    else if(arg.initialization == driver_initialization_const && std::isnan(arg.initVal))
     {
         throw std::invalid_argument("Invalid value for --initVal " + std::to_string(arg.initVal));
     }
 
     if(storeInitData)
     {
-        if(arg.initialization == rocblas_initialization_file)
+        if(arg.initialization == driver_initialization_file)
         {
             storeInitData = 0; //Do not store if loading from file
         }
@@ -3034,7 +2427,7 @@ void readArgs(int argc, char* argv[], Arguments& arg)
     }
 
     // Device Query
-    rocblas_int device_count = query_device_property();
+    int device_count = query_device_property();
 
     if(device_count <= device_id || device_count < multi_device || (multi_device>1 && device_id))
         throw std::invalid_argument("Invalid Device ID");
@@ -3055,19 +2448,19 @@ void readArgs(int argc, char* argv[], Arguments& arg)
 template <typename Ti, typename To = Ti>
 void loadFromBin(driver_operation transA,
                  driver_operation transB,
-                 rocblas_int       M,
-                 rocblas_int       N,
-                 rocblas_int       K,
+                 int       M,
+                 int       N,
+                 int       K,
                  host_vector<Ti>&   hA,
-                 rocblas_int       lda,
+                 int       lda,
                  std::string       ADataFile,
                  host_vector<Ti>&   hB,
-                 rocblas_int       ldb,
+                 int       ldb,
                  std::string       BDataFile,
                  host_vector<To>&   hC,
-                 rocblas_int       ldc,
+                 int       ldc,
                  std::string       CDataFile,
-                 rocblas_int       batch_count)
+                 int       batch_count)
 {
     {
         size_t sz = lda * (transA == driver_operation_none ? K : M) * sizeof(Ti) * batch_count;
@@ -3124,19 +2517,19 @@ void loadFromBin(driver_operation transA,
 template <typename Ti, typename To>
 void storeInitToBin(driver_operation transA,
                 driver_operation transB,
-                rocblas_int       M,
-                rocblas_int       N,
-                rocblas_int       K,
+                int       M,
+                int       N,
+                int       K,
                 host_vector<Ti>&   hA,
-                rocblas_int       lda,
+                int       lda,
                 std::string       ADataFile,
                 host_vector<Ti>&   hB,
-                rocblas_int       ldb,
+                int       ldb,
                 std::string       BDataFile,
                 host_vector<To>&   hC,
-                rocblas_int       ldc,
+                int       ldc,
                 std::string       CDataFile,
-                rocblas_int       batch_count)
+                int       batch_count)
 {
     std::string preFix;
     if(multi_device>1)
@@ -3165,11 +2558,11 @@ void storeInitToBin(driver_operation transA,
 }
 
 template <typename To>
-void storeOutputToBin(rocblas_int       N,
+void storeOutputToBin(int       N,
                 host_vector<To>&   hO,
-                rocblas_int       ldo,
+                int       ldo,
                 std::string       ODataFile,
-                rocblas_int       batch_count)
+                int       batch_count)
 {
     std::string preFix;
     if(multi_device>1)
@@ -3195,7 +2588,7 @@ template <>
 struct FP_PARAM<double>
 {
     using UINT_T              = uint64_t;
-    static constexpr int NSIG = 52;
+    static constexpr int NSIGN = 52;
     static constexpr int NEXP = 11;
 };
 
@@ -3203,23 +2596,23 @@ template <>
 struct FP_PARAM<float>
 {
     using UINT_T              = uint32_t;
-    static constexpr int NSIG = 23;
+    static constexpr int NSIGN = 23;
     static constexpr int NEXP = 8;
 };
 
 template <>
-struct FP_PARAM<rocblas_bfloat16>
+struct FP_PARAM<driver_bfloat16>
 {
     using UINT_T              = uint16_t;
-    static constexpr int NSIG = 7;
+    static constexpr int NSIGN = 7;
     static constexpr int NEXP = 8;
 };
 
 template <>
-struct FP_PARAM<rocblas_half>
+struct FP_PARAM<driver_half>
 {
     using UINT_T              = uint16_t;
-    static constexpr int NSIG = 10;
+    static constexpr int NSIGN = 10;
     static constexpr int NEXP = 5;
 };
 
@@ -3227,12 +2620,12 @@ template <typename T>
 struct rocm_random_common : FP_PARAM<T>
 {
     using typename FP_PARAM<T>::UINT_T;
-    using FP_PARAM<T>::NSIG;
+    using FP_PARAM<T>::NSIGN;
     using FP_PARAM<T>::NEXP;
     using random_fp_int_dist = std::uniform_int_distribution<UINT_T>;
 
     static_assert(sizeof(UINT_T) == sizeof(T), "Type sizes do not match");
-    static constexpr UINT_T expmask = (((UINT_T)1 << NEXP) - 1) << NSIG;
+    static constexpr UINT_T expmask = (((UINT_T)1 << NEXP) - 1) << NSIGN;
     static constexpr UINT_T expbias = ((UINT_T)1 << (NEXP - 1)) - 1;
     static T                signsig_exp(UINT_T signsig, UINT_T exp)
     {
@@ -3241,7 +2634,7 @@ struct rocm_random_common : FP_PARAM<T>
             UINT_T u;
             T      fp;
         };
-        u = signsig & ~expmask | (exp + expbias << NSIG) & expmask;
+        u = signsig & ~expmask | (exp + expbias << NSIGN) & expmask;
         return fp;
     }
 };
@@ -3258,7 +2651,7 @@ struct rocm_random : rocm_random_common<T>
     }
 };
 
-// These values should be squareable and not overflow/underflow
+// // These values should be squareable and not overflow/underflow
 template <typename T>
 struct rocm_random_squareable;
 
@@ -3273,12 +2666,12 @@ struct rocm_random_squareable<float> : rocm_random<float, -100, 100>
 };
 
 template <>
-struct rocm_random_squareable<rocblas_bfloat16> : rocm_random<rocblas_bfloat16, -100, 100>
+struct rocm_random_squareable<driver_bfloat16> : rocm_random<driver_bfloat16, -100, 100>
 {
 };
 
 template <>
-struct rocm_random_squareable<rocblas_half> : rocm_random<rocblas_half, -100, 100>
+struct rocm_random_squareable<driver_half> : rocm_random<driver_half, -100, 100>
 {
 };
 
@@ -3287,10 +2680,10 @@ using rocm_random_full_range = rocm_random<T,
                                            -((int)((uint64_t)1 << (FP_PARAM<T>::NEXP - 1)) - 1),
                                            (uint32_t)((uint64_t)1 << (FP_PARAM<T>::NEXP - 1)) - 1>;
 
-// These values, when scaled, should be addable without loss
-// Basically for these values x, a(1+x) should be different than a.
+// // These values, when scaled, should be addable without loss
+// // Basically for these values x, a(1+x) should be different than a.
 template <typename T>
-using rocm_random_addable = rocm_random<T, 1, FP_PARAM<T>::NSIG>;
+using rocm_random_addable = rocm_random<T, 1, FP_PARAM<T>::NSIGN>;
 
 template <typename T>
 struct rocm_random_narrow_range;
@@ -3306,12 +2699,12 @@ struct rocm_random_narrow_range<float> : rocm_random<float, -100, 0>
 };
 
 template <>
-struct rocm_random_narrow_range<rocblas_bfloat16> : rocm_random<rocblas_bfloat16, -100, 0>
+struct rocm_random_narrow_range<driver_bfloat16> : rocm_random<driver_bfloat16, -100, 0>
 {
 };
 
 template <>
-struct rocm_random_narrow_range<rocblas_half> : rocm_random<rocblas_half, -100, 0>
+struct rocm_random_narrow_range<driver_half> : rocm_random<driver_half, -100, 0>
 {
 };
 
@@ -3320,7 +2713,7 @@ template <typename T>
 using rocm_random_1_2 = rocm_random<T, 0, 1>;
 
 template <template <typename> class RAND, typename T>
-static void init_matrix( std::vector<T>& mat, size_t m, size_t n, size_t ld, rocblas_stride stride, size_t batch)
+static void init_matrix( std::vector<T>& mat, size_t m, size_t n, size_t ld, int64_t stride, size_t batch)
 {
     for(size_t i = 0; i < batch; ++i)
         for(size_t j = 0; j < n; ++j)
@@ -3330,123 +2723,12 @@ static void init_matrix( std::vector<T>& mat, size_t m, size_t n, size_t ld, roc
 
 template <typename T>
 static void
-    init_constant_matrix( std::vector<T>& mat, size_t m, size_t n, size_t ld, rocblas_stride stride, size_t batch, T val)
+    init_constant_matrix( std::vector<T>& mat, size_t m, size_t n, size_t ld, int64_t stride, size_t batch, T val)
 {
     for(size_t i = 0; i < batch; i++)
         for(size_t j = 0; j < n; ++j)
             for(size_t k = 0; k < m; ++k)
                 mat[i * stride + j * ld + k] = val;
-}
-
-// Absolute value
-template <typename T, typename std::enable_if<!is_complex<T>, int>::type = 0>
-__device__ __host__ inline T rocblas_abs(T x)
-{
-    return x < 0 ? -x : x;
-}
-
-// For complex, we have defined a __device__ __host__ compatible std::abs
-template <typename T, typename std::enable_if<is_complex<T>, int>::type = 0>
-__device__ __host__ inline auto rocblas_abs(T x)
-{
-    return std::abs(x);
-}
-
-// rocblas_half
-__device__ __host__ inline rocblas_half rocblas_abs(rocblas_half x)
-{
-    union
-    {
-        rocblas_half x;
-        uint16_t     data;
-    } t = {x};
-    t.data &= 0x7fff;
-    return t.x;
-}
-
-// rocblas_bfloat16 is handled specially
-__device__ __host__ inline rocblas_bfloat16 rocblas_abs(rocblas_bfloat16 x)
-{
-    x.data &= 0x7fff;
-    return x;
-}
-
-// Output rocblas_half value
-inline std::ostream& operator<<(std::ostream& os, rocblas_half x)
-{
-    return os << float(x);
-}
-
-template <typename T>
-void normalizeInputs(driver_operation transa,
-                     driver_operation transb,
-                     size_t            m,
-                     size_t            n,
-                     size_t            k,
-                      std::vector<T>& a,
-                     size_t lda,
-                     rocblas_stride stride_a,
-                      std::vector<T>& b,
-                     size_t ldb,
-                     rocblas_stride stride_b,
-                     size_t batch)
-{
-    // We divide each element of B by the maximum corresponding element of A such that elem(A * B) <
-    // 2 ** NSIG
-    if(transa == driver_operation_none)
-    {
-        for(size_t i = 0; i < batch; i++)
-        {
-            for(size_t j = 0; j < k; ++j)
-            {
-                T scal = T(0);
-                for(size_t k = 0; k < m; ++k)
-                {
-                    T val = T(rocblas_abs(a[i * stride_a + j * lda + k]));
-                    if(val > scal)
-                        scal = val;
-                }
-
-                if(!scal)
-                    abort();
-
-                scal = T(1) / scal;
-                if(transb == driver_operation_none)
-                    for(size_t k = 0; k < n; ++k)
-                        b[i * stride_b + j * ldb + k] *= scal;
-                else
-                    for(size_t k = 0; k < n; ++k)
-                        b[i * stride_b + k * ldb + j] *= scal;
-            }
-        }
-    }
-    else
-    {
-        for(size_t i = 0; i < batch; i++)
-        {
-            for(size_t j = 0; j < k; ++j)
-            {
-                T scal = T(0);
-                for(size_t k = 0; k < m; ++k)
-                {
-                    T val = T(rocblas_abs(a[i * stride_a + k * lda + j]));
-                    if(val > scal)
-                        scal = val;
-                }
-
-                if(!scal)
-                    abort();
-
-                scal = T(1) / scal;
-                if(transb == driver_operation_none)
-                    for(size_t k = 0; k < n; ++k)
-                        b[i * stride_b + j * ldb + k] *= scal;
-                else
-                    for(size_t k = 0; k < n; ++k)
-                        b[i * stride_b + k * ldb + j] *= scal;
-            }
-        }
-    }
 }
 
 template <typename T, typename U = T, std::enable_if_t<!std::is_same<T, int8_t>{},int> = 0>
@@ -3457,13 +2739,13 @@ static void init_broad_range_random_gemm(driver_operation transa,
                                          size_t            k,
                                          std::vector<T>& a,
                                          size_t lda,
-                                         rocblas_stride stride_a,
+                                         int64_t stride_a,
                                          std::vector<T>& b,
                                          size_t ldb,
-                                         rocblas_stride stride_b,
+                                         int64_t stride_b,
                                          std::vector<U>& c,
                                          size_t ldc,
-                                         rocblas_stride stride_c,
+                                         int64_t stride_c,
                                          size_t batch = 1)
 {
     init_matrix<rocm_random_squareable>(a, transa == driver_operation_none ? m : k, transa == driver_operation_none ? k : m, lda, stride_a, batch);
@@ -3481,13 +2763,13 @@ static void init_broad_range_random_gemm(driver_operation transa,
                                          size_t            k,
                                          std::vector<T>& a,
                                          size_t lda,
-                                         rocblas_stride stride_a,
+                                         int64_t stride_a,
                                          std::vector<T>& b,
                                          size_t ldb,
-                                         rocblas_stride stride_b,
+                                         int64_t stride_b,
                                          std::vector<U>& c,
                                          size_t ldc,
-                                         rocblas_stride stride_c,
+                                         int64_t stride_c,
                                          size_t batch = 1)
 {
     rocblas_cout << "Invalid init type for int8_t...exiting" << std::endl;
@@ -3502,13 +2784,13 @@ static void init_narrow_range_random_gemm(driver_operation transa,
                                           size_t            k,
                                           std::vector<T>& a,
                                           size_t lda,
-                                          rocblas_stride stride_a,
+                                          int64_t stride_a,
                                           std::vector<T>& b,
                                           size_t ldb,
-                                          rocblas_stride stride_b,
+                                          int64_t stride_b,
                                           std::vector<U>& c,
                                           size_t ldc,
-                                          rocblas_stride stride_c,
+                                          int64_t stride_c,
                                           size_t batch = 1)
 {
     init_matrix<rocm_random_narrow_range>(a, transa == driver_operation_none ? m : k, transa == driver_operation_none ? k : m, lda, stride_a, batch);
@@ -3524,13 +2806,13 @@ static void init_narrow_range_random_gemm(driver_operation transa,
                                           size_t            k,
                                           std::vector<T>& a,
                                           size_t lda,
-                                          rocblas_stride stride_a,
+                                          int64_t stride_a,
                                           std::vector<T>& b,
                                           size_t ldb,
-                                          rocblas_stride stride_b,
+                                          int64_t stride_b,
                                           std::vector<U>& c,
                                           size_t ldc,
-                                          rocblas_stride stride_c,
+                                          int64_t stride_c,
                                           size_t batch = 1)
 {
     rocblas_cout << "Invalid init type for int8_t...exiting" << std::endl;
@@ -3546,13 +2828,13 @@ static void init_full_range_random_gemm(driver_operation transa,
                                         size_t            k,
                                         std::vector<T>& a,
                                         size_t lda,
-                                        rocblas_stride stride_a,
+                                        int64_t stride_a,
                                         std::vector<T>& b,
                                         size_t ldb,
-                                        rocblas_stride stride_b,
+                                        int64_t stride_b,
                                         std::vector<U>& c,
                                         size_t ldc,
-                                        rocblas_stride stride_c,
+                                        int64_t stride_c,
                                         size_t batch = 1)
 {
     init_matrix<rocm_random_full_range>(a, transa == driver_operation_none ? m : k, transa == driver_operation_none ? k : m, lda, stride_a, batch);
@@ -3569,13 +2851,13 @@ static void init_full_range_random_gemm(driver_operation transa,
                                         size_t            k,
                                         std::vector<T>& a,
                                         size_t lda,
-                                        rocblas_stride stride_a,
+                                        int64_t stride_a,
                                         std::vector<T>& b,
                                         size_t ldb,
-                                        rocblas_stride stride_b,
+                                        int64_t stride_b,
                                         std::vector<U>& c,
                                         size_t ldc,
-                                        rocblas_stride stride_c,
+                                        int64_t stride_c,
                                         size_t batch = 1)
 {
     rocblas_cout << "Invalid init type for int8_t...exiting" << std::endl;
@@ -3590,13 +2872,13 @@ static void init_constant_gemm(driver_operation transa,
                                size_t            k,
                                std::vector<T>& a,
                                size_t lda,
-                               rocblas_stride stride_a,
+                               int64_t stride_a,
                                std::vector<T>& b,
                                size_t ldb,
-                               rocblas_stride stride_b,
+                               int64_t stride_b,
                                std::vector<U>& c,
                                size_t ldc,
-                               rocblas_stride stride_c,
+                               int64_t stride_c,
                                T      val,
                                size_t batch = 1)
 {
@@ -3605,29 +2887,29 @@ static void init_constant_gemm(driver_operation transa,
     init_constant_matrix<U>(c, m, n, ldc, stride_c, batch, U(val));
 }
 
-#ifdef HIPBLAS
+// #ifdef HIPBLAS
 // #define driver_operation hipblasOperation_t
 // #define char2driver_operation char2hipblas_operation
 // #define driver_operation_none HIPBLAS_OP_N
-#define driver_gemm hipblasGemm
-#define driver_gemm_strided_batched hipblasGemmStridedBatched
-#define driver_gemm_ex hipblasGemmEx
-#define driver_type(X) rocblas_datatype2hipblas_datatype(X)
-#define driver_algo(X) rocblas_algo2hipblas_algo(X)
-// #define driver_output_type(X) rocblas_datatype2hipblas_datatype(X)
+// #define driver_gemm hipblasGemm
+// #define driver_gemm_strided_batched hipblasGemmStridedBatched
+// #define driver_gemm_ex hipblasGemmEx
+// #define driver_type(X) driver_type2hipblas_datatype(X)
+// #define driver_algo(X) rocblas_algo2hipblas_algo(X)
+// #define driver_output_type(X) driver_type2hipblas_datatype(X)
 // auto driver_gemm = hipblasGemm;
-#else
+// #else
 // #define driver_operation rocblas_operation
 // #define char2driver_operation char2rocblas_operation
 // #define driver_operation_none rocblas_operation_none
-#define driver_gemm rocblas_gemm
-#define driver_gemm_strided_batched rocblas_gemm_strided_batched
-#define driver_gemm_ex rocblas_gemm_ex
-#define driver_type(X) X
-#define driver_algo(X) X
+// #define driver_gemm rocblas_gemm
+// #define driver_gemm_strided_batched rocblas_gemm_strided_batched
+// #define driver_gemm_ex rocblas_gemm_ex
+// #define driver_type(X) X
+// #define driver_algo(X) X
 // #define driver_output_type(X) X
 // auto driver_gemm = rocblas_gemm;
-#endif
+// #endif
 
 
 #endif /* _UTILITY_ */

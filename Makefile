@@ -5,7 +5,7 @@ BOOST = -lboost_program_options
 # CFLAGS=-DHIPBLAS=1
 # CPPFLAGS += -DHIPBLAS
 ifeq ($(BUILD_WITH_HIPBLAS),1)
-CFLAGS=-DHIPBLAS=1
+CFLAGS=-DHIPBLAS=1 
 ifeq ($(HIPBLASPATH),)
 HIPBLASLIB = -lhipblas -L /opt/rocm/hipblas/lib/
 HIPBLASINCL = -I /opt/rocm/hipblas/include/
@@ -20,18 +20,18 @@ endif
 endif
 endif
 
-ifeq ($(ROCBLASPATH),)
-ROCBLASLIB = -lrocblas -L /opt/rocm/rocblas/lib/
-ROCBLASINCL = -I /opt/rocm/rocblas/include/
-else
-ifeq ($(DEBUG),1)
-ROCBLASLIB = -lrocblas -L $(ROCBLASPATH)/build/debug/library/src/ --linker-options=-rpath,$(ROCBLASPATH)/build/debug/library/src/
-ROCBLASINCL = -I $(ROCBLASPATH)/library/include/ -I $(ROCBLASPATH)/build/debug/include/ -I $(ROCBLASPATH)/build/debug/include/internal
-else
-ROCBLASLIB = -lrocblas -L $(ROCBLASPATH)/build/release/library/src/ --linker-options=-rpath,$(ROCBLASPATH)/build/release/library/src/
-ROCBLASINCL = -I $(ROCBLASPATH)/library/include/ -I $(ROCBLASPATH)/build/release/include/ -I $(ROCBLASPATH)/build/release/include/internal
-endif
-endif
+# ifeq ($(ROCBLASPATH),)
+# ROCBLASLIB = -lrocblas -L /opt/rocm/rocblas/lib/
+# ROCBLASINCL = -I /opt/rocm/rocblas/include/
+# else
+# ifeq ($(DEBUG),1)
+# ROCBLASLIB = -lrocblas -L $(ROCBLASPATH)/build/debug/library/src/ --linker-options=-rpath,$(ROCBLASPATH)/build/debug/library/src/
+# ROCBLASINCL = -I $(ROCBLASPATH)/library/include/ -I $(ROCBLASPATH)/build/debug/include/ -I $(ROCBLASPATH)/build/debug/include/internal
+# else
+# ROCBLASLIB = -lrocblas -L $(ROCBLASPATH)/build/release/library/src/ --linker-options=-rpath,$(ROCBLASPATH)/build/release/library/src/
+# ROCBLASINCL = -I $(ROCBLASPATH)/library/include/ -I $(ROCBLASPATH)/build/release/include/ -I $(ROCBLASPATH)/build/release/include/internal
+# endif
+# endif
 
 ifeq ($(CLANG),1)
 LINKER_FLAG = -rtlib=compiler-rt
