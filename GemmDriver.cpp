@@ -406,50 +406,50 @@ void BenchGemmStridedBatched(const Arguments& arg, std::promise<std::pair<double
     const T *aptr, *invAg1ptr, *invAg2ptr;
     T *      cptr, *invAg2cptr;
 
-    // aptr       = load_ptr_batch(A, b, offset_A, stride_A);
-    // invAg1ptr  = load_ptr_batch(invAg1, b, offset_invAg1, stride_invA);
-    // invAg2ptr  = load_ptr_batch(invAg2a, b, offset_invAg2a, stride_invA);
-    // cptr       = load_ptr_batch(C, b, offset_C, stride_C);
-    // invAg2cptr = load_ptr_batch(invAg2c, b, offset_invAg2c, stride_invA);
+    aptr       = load_ptr_batch((T*)dA, 0, 32, 16384);
+    invAg1ptr  = load_ptr_batch((T*)dinvA, 0, 0, 16384);
+    invAg2ptr  = load_ptr_batch((T*)dinvA, 0, 4128, 16384);
+    cptr       = load_ptr_batch((T*)dinvA, 0, 12288, 16384);
+    invAg2cptr = load_ptr_batch((T*)dinvA, 0, 32, 16384);
 
 
-    //     CHECK_ROCBLAS_ERROR(rocblas_gemm_strided_batched<T>(handle,
-    //                                                         rocblas_operation_none,
-    //                                                         rocblas_operation_none,
-    //                                                         M,
-    //                                                         N,
-    //                                                         K,
-    //                                                         d_alpha,
-    //                                                         dA,
-    //                                                         lda,
-    //                                                         stride_a,
-    //                                                         dB,
-    //                                                         ldb,
-    //                                                         stride_b,
-    //                                                         d_beta,
-    //                                                         dC,
-    //                                                         ldc,
-    //                                                         stride_c,
-    //                                                         batch_count));
+        CHECK_ROCBLAS_ERROR(rocblas_gemm_strided_batched<T>(handle,
+                                                            rocblas_operation_none,
+                                                            rocblas_operation_none,
+                                                            32,
+                                                            32,
+                                                            32,
+                                                            &one,
+                                                            aptr,
+                                                            128,
+                                                            8256,
+                                                            invAg1ptr,
+                                                            128,
+                                                            8256,
+                                                            &zero,
+                                                            cptr,
+                                                            128,
+                                                            32,
+                                                            2));
 
-        // CHECK_ROCBLAS_ERROR(rocblas_gemm_strided_batched<T>(handle,
-        //                                                     transA,
-        //                                                     transB,
-        //                                                     M,
-        //                                                     N,
-        //                                                     K,
-        //                                                     d_alpha,
-        //                                                     dA,
-        //                                                     lda,
-        //                                                     stride_a,
-        //                                                     dB,
-        //                                                     ldb,
-        //                                                     stride_b,
-        //                                                     d_beta,
-        //                                                     dC,
-        //                                                     ldc,
-        //                                                     stride_c,
-        //                                                     batch_count));
+        CHECK_ROCBLAS_ERROR(rocblas_gemm_strided_batched<T>(handle,
+                                                            rocblas_operation_none,
+                                                            rocblas_operation_none,
+                                                            32,
+                                                            32,
+                                                            32,
+                                                            &negative_one,
+                                                            invAg2ptr,
+                                                            128,
+                                                            8256,
+                                                            cptr,
+                                                            128,
+                                                            32,
+                                                            &zero,
+                                                            invAg2cptr,
+                                                            128,
+                                                            8256,
+                                                            2));
 
 // batch_count 1 sub_blocks 1
 //  offset_A 64 offset_invAg1 0 offset_invAg2a 8256 offset_invAg2c 64 offset_C 8192 stride_A 16384 sub_stride_A 0 stride_invA 16384 sub_stride_invA 0 stride_C 16384 sub_stride_C 0
@@ -458,43 +458,50 @@ void BenchGemmStridedBatched(const Arguments& arg, std::promise<std::pair<double
 // -m 64 -n 64 -k 64 --alpha -1 --lda 128 --ldb 128 --beta 0 --ldc 128 --stride_a 0 --stride_b 0 --stride_c 0 --batch 1
 
 
-        // CHECK_ROCBLAS_ERROR(rocblas_gemm_strided_batched<T>(handle,
-        //                                                     transA,
-        //                                                     transB,
-        //                                                     M,
-        //                                                     N,
-        //                                                     K,
-        //                                                     d_alpha,
-        //                                                     dA,
-        //                                                     lda,
-        //                                                     stride_a,
-        //                                                     dB,
-        //                                                     ldb,
-        //                                                     stride_b,
-        //                                                     d_beta,
-        //                                                     dC,
-        //                                                     ldc,
-        //                                                     stride_c,
-        //                                                     batch_count));
+    aptr       = load_ptr_batch((T*)dA, 0, 64, 16384);
+    invAg1ptr  = load_ptr_batch((T*)dinvA, 0, 0, 16384);
+    invAg2ptr  = load_ptr_batch((T*)dinvA, 0, 8256, 16384);
+    cptr       = load_ptr_batch((T*)dinvA, 0, 8192, 16384);
+    invAg2cptr = load_ptr_batch((T*)dinvA, 0, 64, 16384);
 
-        // CHECK_ROCBLAS_ERROR(rocblas_gemm_strided_batched<T>(handle,
-        //                                                     transA,
-        //                                                     transB,
-        //                                                     M,
-        //                                                     N,
-        //                                                     K,
-        //                                                     d_alpha,
-        //                                                     dA,
-        //                                                     lda,
-        //                                                     stride_a,
-        //                                                     dB,
-        //                                                     ldb,
-        //                                                     stride_b,
-        //                                                     d_beta,
-        //                                                     dC,
-        //                                                     ldc,
-        //                                                     stride_c,
-        //                                                     batch_count));
+
+        CHECK_ROCBLAS_ERROR(rocblas_gemm_strided_batched<T>(handle,
+                                                            rocblas_operation_none,
+                                                            rocblas_operation_none,
+                                                            64,
+                                                            64,
+                                                            64,
+                                                            &one,
+                                                            aptr,
+                                                            128,
+                                                            0,
+                                                            invAg1ptr,
+                                                            128,
+                                                            0,
+                                                            &zero,
+                                                            cptr,
+                                                            128,
+                                                            0,
+                                                            1));
+
+        CHECK_ROCBLAS_ERROR(rocblas_gemm_strided_batched<T>(handle,
+                                                            rocblas_operation_none,
+                                                            rocblas_operation_none,
+                                                            64,
+                                                            64,
+                                                            64,
+                                                            &negative_one,
+                                                            invAg2ptr,
+                                                            128,
+                                                            0,
+                                                            cptr,
+                                                            128,
+                                                            0,
+                                                            &zero,
+                                                            invAg2cptr,
+                                                            128,
+                                                            0,
+                                                            1));
 
     // std::vector<T> h_invA(128*128);
     hipMemcpy(hinvA.data(), dinvA, sizeof(T) * 128*128, hipMemcpyDeviceToHost);
