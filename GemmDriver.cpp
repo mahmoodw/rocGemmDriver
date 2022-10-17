@@ -457,6 +457,16 @@ void BenchGemmStridedBatched(const Arguments& arg, std::promise<std::pair<double
 
 // -m 64 -n 64 -k 64 --alpha -1 --lda 128 --ldb 128 --beta 0 --ldc 128 --stride_a 0 --stride_b 0 --stride_c 0 --batch 1
 
+    hipMemcpy(hinvA.data(), dinvA, sizeof(T) * 128*128, hipMemcpyDeviceToHost);
+
+    rocblas_cout<<"InvA inter"<<std::endl;
+
+    for(int i = 0; i<128; i++)
+    {
+        for(int j = 0; j<128; j++)
+            rocblas_cout<<" ("<<i<<","<<j<<") "<<hinvA[j*128+i]<<" ";
+        rocblas_cout<<std::endl;
+    }
 
     aptr       = load_ptr_batch((T*)dA, 0, 64, 16384);
     invAg1ptr  = load_ptr_batch((T*)dinvA, 0, 0, 16384);
