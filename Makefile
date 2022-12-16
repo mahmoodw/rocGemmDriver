@@ -20,18 +20,18 @@ endif
 endif
 endif
 
-# ifeq ($(ROCBLASPATH),)
-# ROCBLASLIB = -lrocblas -L /opt/rocm/rocblas/lib/
-# ROCBLASINCL = -I /opt/rocm/rocblas/include/
-# else
-# ifeq ($(DEBUG),1)
-# ROCBLASLIB = -lrocblas -L $(ROCBLASPATH)/build/debug/library/src/ --linker-options=-rpath,$(ROCBLASPATH)/build/debug/library/src/
-# ROCBLASINCL = -I $(ROCBLASPATH)/library/include/ -I $(ROCBLASPATH)/build/debug/include/ -I $(ROCBLASPATH)/build/debug/include/internal
-# else
-# ROCBLASLIB = -lrocblas -L $(ROCBLASPATH)/build/release/library/src/ --linker-options=-rpath,$(ROCBLASPATH)/build/release/library/src/
-# ROCBLASINCL = -I $(ROCBLASPATH)/library/include/ -I $(ROCBLASPATH)/build/release/include/ -I $(ROCBLASPATH)/build/release/include/internal
-# endif
-# endif
+ifeq ($(ROCBLASPATH),)
+ROCBLASLIB = -lrocblas -L /opt/rocm/rocblas/lib/
+ROCBLASINCL = -I /opt/rocm/rocblas/include/
+else
+ifeq ($(DEBUG),1)
+ROCBLASLIB = -lrocblas -L $(ROCBLASPATH)/build/debug/library/src/ --linker-options=-rpath,$(ROCBLASPATH)/build/debug/library/src/
+ROCBLASINCL = -I $(ROCBLASPATH)/library/include/ -I $(ROCBLASPATH)/build/debug/include/ -I $(ROCBLASPATH)/build/debug/include/internal
+else
+ROCBLASLIB = -lrocblas -L $(ROCBLASPATH)/build/release/library/src/ --linker-options=-rpath,$(ROCBLASPATH)/build/release/library/src/
+ROCBLASINCL = -I $(ROCBLASPATH)/library/include/ -I $(ROCBLASPATH)/build/release/include/ -I $(ROCBLASPATH)/build/release/include/internal
+endif
+endif
 
 ifeq ($(CLANG),1)
 LINKER_FLAG = -rtlib=compiler-rt
