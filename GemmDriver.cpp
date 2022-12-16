@@ -742,49 +742,6 @@ void BenchGemmEx(Arguments& arg, std::promise<std::pair<double,double>> promise)
             exit(1);
         }
 
-        if(std::is_same<To, driver_half>{} && std::is_same<Tc, float>{})
-        {
-            // half precision IEEE has max and lowest values 65504 and -65504,
-            // float precision IEEE has max and lowest values 3.403e+38 and -3.403e+38
-            // the following will overflow to inf in half arithmetic,
-            // but it will equal zero in float arithmetic   65504 * 2 - 65504 * 2
-            //
-            // set matrix A and matrix B so reduction sum has 65504 * 2 - 65504 * 2
-            //
-            const driver_half ieee_half_near_max(65504.0 - 4.0);
-            const driver_half positive_two(2.0);
-            const driver_half negative_two(-2.0);
-            if(M >= 2 && N >= 2 && K >= 2)
-            {
-                if(transA == driver_operation_none)
-                {
-                    hA[0]   = Ti(ieee_half_near_max);
-                    hA[lda] = Ti(ieee_half_near_max);
-                }
-                else
-                {
-                    hA[0] = Ti(ieee_half_near_max);
-                    hA[1] = Ti(ieee_half_near_max);
-                }
-                if(transB == driver_operation_none)
-                {
-                    for(int j = 0; j < N; j++)
-                    {
-                        hB[j * ldb]     = j % 2 == 0 ? Ti(positive_two) : Ti(negative_two);
-                        hB[1 + j * ldb] = j % 2 == 0 ? Ti(negative_two) : Ti(positive_two);
-                    }
-                }
-                else
-                {
-                    for(int j = 0; j < N; j++)
-                    {
-                        hB[j]       = j % 2 == 0 ? Ti(positive_two) : Ti(negative_two);
-                        hB[ldb + j] = j % 2 == 0 ? Ti(negative_two) : Ti(positive_two);
-                    }
-                }
-            }
-        }
-
         if(!c_equals_d)
             rocblas_init<To>(hD_1, M, N, ldd);
 
@@ -803,43 +760,45 @@ void BenchGemmEx(Arguments& arg, std::promise<std::pair<double,double>> promise)
     else
         memBarrier.wait();
 
-//     if(storeInitData)
-//     {
-//         storeInitToBin<Ti,To>(transA, transB, M, N, K, hA, lda, a_file, hB, ldb, b_file, hC, ldc, c_file, 1);
-//     }
+    if(storeInitData)
+    {
+        storeInitToBin<Ti,To>(transA, transB, M, N, K, hA, lda, a_file, hB, ldb, b_file, hC, ldc, c_file, 1);
+    }
 
-//     // copy data from CPU to device
-//     // do packing only when pack_to_int8x4=true (int8x4)
-//     // if int8x4 and A not transposed and valid case, pack A
-//     if(std::is_same<Ti, int8_t>{} && transA == driver_operation_none && pack_to_int8x4)
-//     {
-//         host_vector<Ti> hA_packed(hA);
+#ifndef HIPBLAS //change to cuda
+    // copy data from CPU to device
+    // do packing only when pack_to_int8x4=true (int8x4)
+    // if int8x4 and A not transposed and valid case, pack A
+    if(std::is_same<Ti, int8_t>{} && transA == driver_operation_none && pack_to_int8x4)
+    {
+        host_vector<Ti> hA_packed(hA);
 
-//         rocblas_packInt8(hA_packed, M, K, lda);
-//         CHECK_HIP_ERROR(hipMemcpy(dA, hA_packed, sizeof(Ti) * size_A, hipMemcpyHostToDevice));
-//     }
-//     else
-//     {
-//         CHECK_HIP_ERROR(hipMemcpy(dA, hA, sizeof(Ti) * size_A, hipMemcpyHostToDevice));
-//     }
+        rocblas_packInt8(hA_packed, M, K, lda);
+        CHECK_HIP_ERROR(hipMemcpy(dA, hA_packed, sizeof(Ti) * size_A, hipMemcpyHostToDevice));
+    }
+    else
+    {
+        CHECK_HIP_ERROR(hipMemcpy(dA, hA, sizeof(Ti) * size_A, hipMemcpyHostToDevice));
+    }
 
-//     // do packing only when pack_to_int8x4=true (int8x4)
-//     // if int8x4 and B transposed and valid case, pack B
-//     if(std::is_same<Ti, int8_t>{} && transB != driver_operation_none && pack_to_int8x4)
-//     {
-//         host_vector<Ti> hB_packed(hB);
+    // do packing only when pack_to_int8x4=true (int8x4)
+    // if int8x4 and B transposed and valid case, pack B
+    if(std::is_same<Ti, int8_t>{} && transB != driver_operation_none && pack_to_int8x4)
+    {
+        host_vector<Ti> hB_packed(hB);
 
-//         rocblas_packInt8(hB_packed, N, K, ldb);
-//         CHECK_HIP_ERROR(hipMemcpy(dB, hB_packed, sizeof(Ti) * size_B, hipMemcpyHostToDevice));
-//     }
-//     else
-//     {
-//         CHECK_HIP_ERROR(hipMemcpy(dB, hB, sizeof(Ti) * size_B, hipMemcpyHostToDevice));
-//     }
+        rocblas_packInt8(hB_packed, N, K, ldb);
+        CHECK_HIP_ERROR(hipMemcpy(dB, hB_packed, sizeof(Ti) * size_B, hipMemcpyHostToDevice));
+    }
+    else
+    {
+        CHECK_HIP_ERROR(hipMemcpy(dB, hB, sizeof(Ti) * size_B, hipMemcpyHostToDevice));
+    }
+#endif 
 
-//     CHECK_HIP_ERROR(hipMemcpy(dC, hC, sizeof(To) * size_C, hipMemcpyHostToDevice));
+    CHECK_HIP_ERROR(hipMemcpy(dC, hC, sizeof(To) * size_C, hipMemcpyHostToDevice));
 
-//     CHECK_HIP_ERROR(hipMemcpy(dD, hD_1, sizeof(To) * size_D, hipMemcpyHostToDevice));
+    CHECK_HIP_ERROR(hipMemcpy(dD, hD_1, sizeof(To) * size_D, hipMemcpyHostToDevice));
 
 #ifdef VALIDATE
     if(arg.norm_check)
@@ -1498,18 +1457,9 @@ void BenchGemm(Arguments& arg, std::promise<std::pair<double,double>> promise)
     CHECK_DRIVER_ERROR(driver_set_pointer_mode(handle, DRIVER_POINTER_MODE_HOST));
 
     for(int i = 0; i < number_cold_calls; i++)
-    {
-// #ifdef HIPBLAS
-//         hipblasGemm<T>(
-//             handle, transA, transB, M, N, K, &h_alpha, dA, lda, dB, ldb, &h_beta, dC, ldc);
-// #else
-//         rocblas_gemm<T>(
-//             handle, transA, transB, M, N, K, &h_alpha, dA, lda, dB, ldb, &h_beta, dC, ldc);
-// #endif
-
         driver_gemm<T>(
             handle, transA, transB, M, N, K, &h_alpha, dA, lda, dB, ldb, &h_beta, dC, ldc);
-    }
+
     
 
     if(time_each_iter)
@@ -1649,12 +1599,14 @@ int launch_bench(Arguments& arg, std::promise<std::pair<double,double>> promise)
         {
             BenchGemmEx<float, float, float>(arg, std::move(promise));
         }
+#ifndef HIPBLAS //change to cuda
         else if((a_type == "bf16_r") && (b_type == "bf16_r")
                 && (c_type == "bf16_r") && (d_type == "bf16_r")
                 && (compute_type == "f32_r" || compute_type == "s"))
         {
             BenchGemmEx<driver_bfloat16, driver_bfloat16, float>(arg, std::move(promise));
         }
+#endif
         else if(a_type == "f16_r"  && b_type == "f16_r"
                 && c_type == "f16_r" && d_type == "f16_r"
                 && compute_type == "f16_r")
@@ -1749,20 +1701,8 @@ int main(int argc, char* argv[])
         //print overall run data
         double overall_time = (end-start)/arg.iters;
 
-        double overall_gflops;
-        // if(driver_type2string(arg.d_type) == "f16_r")
-        //     overall_gflops = gemm_gflop_count<driver_half>(arg.M, arg.N, arg.K);
-        // else if(driver_type2string(arg.d_type) == "bf16_r")
-        //     overall_gflops = gemm_gflop_count<driver_bfloat16>(arg.M, arg.N, arg.K);
-        // else if(driver_type2string(arg.d_type) == "f32_r")
-        //     overall_gflops = gemm_gflop_count<float>(arg.M, arg.N, arg.K);
-        // else if(driver_type2string(arg.d_type) == "f64_r")
-        overall_gflops = gemm_gflop_count(arg.M, arg.N, arg.K);
-        // else
-        // {
-        //     rocblas_cout << "Precision not implemented, exiting";
-        //     return driver_status_not_implemented;
-        // }
+        double overall_gflops = gemm_gflop_count(arg.M, arg.N, arg.K);
+
         overall_gflops /= overall_time / 1e6 / multi_device; 
 
         rocblas_cout<<"Overall performance using host timing"<<std::endl

@@ -1,26 +1,22 @@
 #include "hipblas.h"
-#include "cuda_bf16.h"
+// #include "cuda_bf16.h"
 
-#define driver_operation hipblasOperation_t
-#define char2driver_operation char2hipblas_operation
-#define driver_operation_none HIPBLAS_OP_N
-#define driver_set_pointer_mode hipblasSetPointerMode
-#define DRIVER_POINTER_MODE_HOST HIPBLAS_POINTER_MODE_HOST
-#define DRIVER_POINTER_MODE_DEVICE HIPBLAS_POINTER_MODE_DEVICE
-#define CHECK_DRIVER_ERROR CHECK_HIPBLAS_ERROR
-#define driver_half hipblasHalf
-#define driver_bfloat16 hipblasBfloat16
-#define driver_local_handle hipblasLocalHandle
-#define driver_type hipblasDatatype_t
-#define driver_type2string hipblas_datatype2string
-#define string2driver_type string2hipblas_datatype
-#define driver_algo hipblasGemmAlgo_t
-#define driver_stride hipblasStride
+struct hipblasBfloat16_ex : hipblasBfloat16
+{ 
+    hipblasBfloat16_ex() = default;
+    
+    hipblasBfloat16_ex(hipblasBfloat16 val)
+    {
+        hipblasBfloat16 temp = val;
+        data = reinterpret_cast<uint16_t&>(temp);
+    }
 
+    hipblasBfloat16_ex(double val);
+};
 
-inline hipblasBfloat16 float_to_bfloat16(float f)
+inline hipblasBfloat16_ex float_to_bfloat16(float f)
 {
-    hipblasBfloat16 rv;
+    hipblasBfloat16_ex rv;
     union
     {
         float    fp32;
@@ -38,67 +34,54 @@ inline hipblasBfloat16 float_to_bfloat16(float f)
     return rv;
 }
 
-inline __host__ driver_bfloat16 float_to_bfloat16_truncate2(float val)
+inline __host__ hipblasBfloat16_ex float_to_bfloat16_truncate2(float val)
 {
     union
     {
         float    fp32;
         uint32_t int32;
     } u = {val};
-    driver_bfloat16 ret;
+    hipblasBfloat16_ex ret;
     ret.data = uint16_t(u.int32 >> 16);
     if((u.int32 & 0x7fff0000) == 0x7f800000 && u.int32 & 0xffff)
         ret.data |= 1; // Preserve signaling NaN
     return ret;
 }
 
-template <typename T>
-inline void rocblas_init_sin(
-    std::vector<T>& A, size_t M, size_t N, size_t lda, int64_t stride = 0, size_t batch_count = 1)
+hipblasBfloat16_ex::hipblasBfloat16_ex(double val)
 {
-    for(size_t i_batch = 0; i_batch < batch_count; i_batch++)
-        for(size_t i = 0; i < M; ++i)
-            for(size_t j = 0; j < N; ++j)
-                A[i + j * lda + i_batch * stride] = T(sin(i + j * lda + i_batch * stride));
+    hipblasBfloat16 temp = float_to_bfloat16(val);
+    data = reinterpret_cast<uint16_t&>(temp);
+}
+
+#define driver_operation hipblasOperation_t
+#define char2driver_operation char2hipblas_operation
+#define driver_operation_none HIPBLAS_OP_N
+#define driver_set_pointer_mode hipblasSetPointerMode
+#define DRIVER_POINTER_MODE_HOST HIPBLAS_POINTER_MODE_HOST
+#define DRIVER_POINTER_MODE_DEVICE HIPBLAS_POINTER_MODE_DEVICE
+#define CHECK_DRIVER_ERROR CHECK_HIPBLAS_ERROR
+#define driver_half hipblasHalf
+#define driver_bfloat16 hipblasBfloat16_ex
+#define driver_local_handle hipblasLocalHandle
+#define driver_type hipblasDatatype_t
+#define driver_type2string hipblas_datatype2string
+#define string2driver_type string2hipblas_datatype
+#define driver_algo hipblasGemmAlgo_t
+#define driver_stride hipblasStride
+
+/*! \brief  generate a random number in HPL-like [-0.5,0.5] doubles  */
+template <typename T>
+inline T random_hpl_generator()
+{
+    return std::uniform_real_distribution<double>(-0.5, 0.5)(rocblas_rng);
 }
 
 template <>
-inline void rocblas_init_sin<hipblasBfloat16>(
-    std::vector<hipblasBfloat16>& A, size_t M, size_t N, size_t lda, int64_t stride = 0, size_t batch_count = 1)
+inline driver_bfloat16 random_hpl_generator()
 {
-    for(size_t i_batch = 0; i_batch < batch_count; i_batch++)
-        for(size_t i = 0; i < M; ++i)
-            for(size_t j = 0; j < N; ++j)
-                A[i + j * lda + i_batch * stride] = float_to_bfloat16(sin(i + j * lda + i_batch * stride));
+    return driver_bfloat16(float_to_bfloat16(std::uniform_real_distribution<double>(-0.5, 0.5)(rocblas_rng)));
 }
-
-template <typename T>
-inline void rocblas_init_cos(
-    std::vector<T>& A, size_t M, size_t N, size_t lda, int64_t stride = 0, size_t batch_count = 1)
-{
-    for(size_t i_batch = 0; i_batch < batch_count; i_batch++)
-        for(size_t i = 0; i < M; ++i)
-            for(size_t j = 0; j < N; ++j)
-                A[i + j * lda + i_batch * stride] = T(cos(i + j * lda + i_batch * stride));
-}
-
-template <>
-inline void rocblas_init_cos<hipblasBfloat16>(
-    std::vector<hipblasBfloat16>& A, size_t M, size_t N, size_t lda, int64_t stride = 0, size_t batch_count = 1)
-{
-    for(size_t i_batch = 0; i_batch < batch_count; i_batch++)
-        for(size_t i = 0; i < M; ++i)
-            for(size_t j = 0; j < N; ++j)
-                A[i + j * lda + i_batch * stride] = float_to_bfloat16(cos(i + j * lda + i_batch * stride));
-}
-
-// // Helper routine to convert floats into their half equivalent; uses F16C instructions
-// inline hipblasHalf float_to_half(float val)
-// {
-//     // return static_cast<hipblasHalf>( _mm_cvtsi128_si32( _mm_cvtps_ph( _mm_set_ss( val ), 0 ) )
-//     uint16_t a = _cvtss_sh(val, 0);
-//     return a;
-// }
 
 /*! \brief  generate a random number in range [1,2,3,4,5,6,7,8,9,10] */
 template <typename T>
@@ -108,9 +91,9 @@ inline T random_generator()
 }
 
 template <>
-inline hipblasBfloat16 random_generator<hipblasBfloat16>()
+inline driver_bfloat16 random_generator<driver_bfloat16>()
 {
-    return hipblasBfloat16(float_to_bfloat16(std::uniform_int_distribution<int>(-2, 2)(rocblas_rng))); 
+    return driver_bfloat16(float_to_bfloat16(std::uniform_int_distribution<int>(-2, 2)(rocblas_rng))); 
 };
 
 // for hipblasHalf, generate float, and convert to hipblasHalf
@@ -127,6 +110,48 @@ inline hipblasHalf random_generator<hipblasHalf>()
     driver_bfloat16 temp = float_to_bfloat16_truncate2(std::uniform_int_distribution<int>(-2, 2)(rocblas_rng));
     return reinterpret_cast<hipblasHalf&>(temp);
 };
+
+template <typename T>
+static constexpr bool is_complex = false;
+
+template <>
+HIPBLAS_CLANG_STATIC constexpr bool is_complex<hipblasComplex> = true;
+
+template <>
+HIPBLAS_CLANG_STATIC constexpr bool is_complex<hipblasDoubleComplex> = true;
+
+// Absolute value
+template <typename T, typename std::enable_if<!is_complex<T>, int>::type = 0>
+__device__ __host__ inline T driver_abs(T x)
+{
+    return x < 0 ? -x : x;
+}
+
+// For complex, we have defined a __device__ __host__ compatible std::abs
+template <typename T, typename std::enable_if<is_complex<T>, int>::type = 0>
+__device__ __host__ inline auto driver_abs(T x)
+{
+    return std::abs(x);
+}
+
+// driver_half
+__device__ __host__ inline driver_half driver_abs(driver_half x)
+{
+    union
+    {
+        driver_half x;
+        uint16_t     data;
+    } t = {x};
+    t.data &= 0x7fff;
+    return t.x;
+}
+
+// driver_bfloat16 is handled specially
+__device__ __host__ inline driver_bfloat16 driver_abs(driver_bfloat16 x)
+{
+    x.data &= 0x7fff;
+    return x;
+}
 
 template <typename T>
 void normalizeInputs(driver_operation transa,
@@ -153,7 +178,7 @@ void normalizeInputs(driver_operation transa,
                 T scal = T(0);
                 for(size_t k = 0; k < m; ++k)
                 {
-                    T val = T(abs(a[i * stride_a + j * lda + k]));
+                    T val = T(driver_abs(a[i * stride_a + j * lda + k]));
                     if(val > scal)
                         scal = val;
                 }
@@ -180,7 +205,7 @@ void normalizeInputs(driver_operation transa,
                 T scal = T(0);
                 for(size_t k = 0; k < m; ++k)
                 {
-                    T val = T(abs(a[i * stride_a + k * lda + j]));
+                    T val = T(driver_abs(a[i * stride_a + k * lda + j]));
                     if(val > scal)
                         scal = val;
                 }
@@ -200,97 +225,97 @@ void normalizeInputs(driver_operation transa,
     }
 }
 
-template <>
-void normalizeInputs<hipblasBfloat16>(driver_operation transa,
-                     driver_operation transb,
-                     size_t            m,
-                     size_t            n,
-                     size_t            k,
-                      std::vector<hipblasBfloat16>& a,
-                     size_t lda,
-                     int64_t stride_a,
-                      std::vector<hipblasBfloat16>& b,
-                     size_t ldb,
-                     int64_t stride_b,
-                     size_t batch)
-{
-    // We divide each element of B by the maximum corresponding element of A such that elem(A * B) <
-    // 2 ** NSIGN
-    if(transa == driver_operation_none)
-    {
-        for(size_t i = 0; i < batch; i++)
-        {
-            for(size_t j = 0; j < k; ++j)
-            {
-                __nv_bfloat16 scal = 0.0f;
-                for(size_t k = 0; k < m; ++k)
-                {
-                    hipblasBfloat16 temp = hipblasBfloat16(a[i * stride_a + j * lda + k]);
-                    __nv_bfloat16 val =  reinterpret_cast<__nv_bfloat16&>(temp);
-                    val = abs(val);
-                    if(val > scal)
-                        scal = val;
-                }
+// template <>
+// void normalizeInputs<driver_bfloat16>(driver_operation transa,
+//                      driver_operation transb,
+//                      size_t            m,
+//                      size_t            n,
+//                      size_t            k,
+//                       std::vector<driver_bfloat16>& a,
+//                      size_t lda,
+//                      int64_t stride_a,
+//                       std::vector<driver_bfloat16>& b,
+//                      size_t ldb,
+//                      int64_t stride_b,
+//                      size_t batch)
+// {
+//     // We divide each element of B by the maximum corresponding element of A such that elem(A * B) <
+//     // 2 ** NSIGN
+//     if(transa == driver_operation_none)
+//     {
+//         for(size_t i = 0; i < batch; i++)
+//         {
+//             for(size_t j = 0; j < k; ++j)
+//             {
+//                 __nv_bfloat16 scal = 0.0f;
+//                 for(size_t k = 0; k < m; ++k)
+//                 {
+//                     driver_bfloat16 temp = driver_bfloat16(a[i * stride_a + j * lda + k]);
+//                     __nv_bfloat16 val =  reinterpret_cast<__nv_bfloat16&>(temp);
+//                     val = driver_abs(val);
+//                     if(val > scal)
+//                         scal = val;
+//                 }
 
-                if(!scal)
-                    abort();
+//                 if(!scal)
+//                     abort();
 
-                scal = __nv_bfloat16(1.0f) / scal;
-                if(transb == driver_operation_none)
-                    for(size_t k = 0; k < n; ++k)
-                    {   
-                        hipblasBfloat16 temp = b[i * stride_b + j * ldb + k];
-                        __nv_bfloat16 product = reinterpret_cast<__nv_bfloat16&>(temp) * scal;
-                        b[i * stride_b + j * ldb + k] = reinterpret_cast<hipblasBfloat16&>(product);
-                    }
-                else
-                    for(size_t k = 0; k < n; ++k)
-                    {   
-                        hipblasBfloat16 temp = b[i * stride_b + k * ldb + j];
-                        __nv_bfloat16 product = reinterpret_cast<__nv_bfloat16&>(temp) * scal;
-                        b[i * stride_b + k * ldb + j] = reinterpret_cast<hipblasBfloat16&>(product);
-                    }
-            }
-        }
-    }
-    else
-    {
-        for(size_t i = 0; i < batch; i++)
-        {
-            for(size_t j = 0; j < k; ++j)
-            {
-                __nv_bfloat16 scal = 0.0f;
-                for(size_t k = 0; k < m; ++k)
-                {
-                    hipblasBfloat16 temp = hipblasBfloat16(a[i * stride_a + k * lda + j]);
-                    __nv_bfloat16 val = reinterpret_cast<__nv_bfloat16&>(temp);
-                    val = abs(val);
-                    if(val > scal)
-                        scal = val;
-                }
+//                 scal = __nv_bfloat16(1.0f) / scal;
+//                 if(transb == driver_operation_none)
+//                     for(size_t k = 0; k < n; ++k)
+//                     {   
+//                         driver_bfloat16 temp = b[i * stride_b + j * ldb + k];
+//                         __nv_bfloat16 product = reinterpret_cast<__nv_bfloat16&>(temp) * scal;
+//                         b[i * stride_b + j * ldb + k] = reinterpret_cast<driver_bfloat16&>(product);
+//                     }
+//                 else
+//                     for(size_t k = 0; k < n; ++k)
+//                     {   
+//                         driver_bfloat16 temp = b[i * stride_b + k * ldb + j];
+//                         __nv_bfloat16 product = reinterpret_cast<__nv_bfloat16&>(temp) * scal;
+//                         b[i * stride_b + k * ldb + j] = reinterpret_cast<driver_bfloat16&>(product);
+//                     }
+//             }
+//         }
+//     }
+//     else
+//     {
+//         for(size_t i = 0; i < batch; i++)
+//         {
+//             for(size_t j = 0; j < k; ++j)
+//             {
+//                 __nv_bfloat16 scal = 0.0f;
+//                 for(size_t k = 0; k < m; ++k)
+//                 {
+//                     driver_bfloat16 temp = driver_bfloat16(a[i * stride_a + k * lda + j]);
+//                     __nv_bfloat16 val = reinterpret_cast<__nv_bfloat16&>(temp);
+//                     val = driver_abs(val);
+//                     if(val > scal)
+//                         scal = val;
+//                 }
 
-                if(!scal)
-                    abort();
+//                 if(!scal)
+//                     abort();
 
-                scal = __nv_bfloat16(1.0f) / scal;
-                if(transb == driver_operation_none)
-                    for(size_t k = 0; k < n; ++k)
-                    {   
-                        hipblasBfloat16 temp = b[i * stride_b + j * ldb + k];
-                        __nv_bfloat16 product = reinterpret_cast<__nv_bfloat16&>(temp) * scal;
-                        b[i * stride_b + j * ldb + k] = reinterpret_cast<hipblasBfloat16&>(product);
-                    }
-                else
-                    for(size_t k = 0; k < n; ++k)
-                    {   
-                        hipblasBfloat16 temp = b[i * stride_b + k * ldb + j];
-                        __nv_bfloat16 product = reinterpret_cast<__nv_bfloat16&>(temp) * scal;
-                        b[i * stride_b + k * ldb + j] = reinterpret_cast<hipblasBfloat16&>(product);
-                    }
-            }
-        }
-    }
-}
+//                 scal = __nv_bfloat16(1.0f) / scal;
+//                 if(transb == driver_operation_none)
+//                     for(size_t k = 0; k < n; ++k)
+//                     {   
+//                         driver_bfloat16 temp = b[i * stride_b + j * ldb + k];
+//                         __nv_bfloat16 product = reinterpret_cast<__nv_bfloat16&>(temp) * scal;
+//                         b[i * stride_b + j * ldb + k] = reinterpret_cast<driver_bfloat16&>(product);
+//                     }
+//                 else
+//                     for(size_t k = 0; k < n; ++k)
+//                     {   
+//                         driver_bfloat16 temp = b[i * stride_b + k * ldb + j];
+//                         __nv_bfloat16 product = reinterpret_cast<__nv_bfloat16&>(temp) * scal;
+//                         b[i * stride_b + k * ldb + j] = reinterpret_cast<driver_bfloat16&>(product);
+//                     }
+//             }
+//         }
+//     }
+// }
 
 // clang-format off
 // hipblas_initialization string2hipblas_initialization(const std::string& value)
@@ -411,15 +436,6 @@ public:
         return m_handle;
     }
 };
-
-template <typename T>
-static constexpr bool is_complex = false;
-
-template <>
-HIPBLAS_CLANG_STATIC constexpr bool is_complex<hipblasComplex> = true;
-
-template <>
-HIPBLAS_CLANG_STATIC constexpr bool is_complex<hipblasDoubleComplex> = true;
 
 char hipblas2char_operation(hipblasOperation_t value)
 {
@@ -545,29 +561,6 @@ hipblasSideMode_t char2hipblas_side(char value)
     }
     return HIPBLAS_SIDE_LEFT;
 }
-
-// // clang-format off
-// hipblasDatatype_t string2hipblas_datatype(const std::string& value)
-// {
-//     return
-//         value == "f16_r" || value == "h" ? HIPBLAS_R_16F  :
-//         value == "f32_r" || value == "s" ? HIPBLAS_R_32F  :
-//         value == "f64_r" || value == "d" ? HIPBLAS_R_64F  :
-//         value == "bf16_r"                ? HIPBLAS_R_16B :
-//         value == "f16_c"                 ? HIPBLAS_C_16B  :
-//         value == "f32_c" || value == "c" ? HIPBLAS_C_32F  :
-//         value == "f64_c" || value == "z" ? HIPBLAS_C_64F  :
-//         value == "bf16_c"                ? HIPBLAS_C_16B :
-//         value == "i8_r"                  ? HIPBLAS_R_8I   :
-//         value == "i32_r"                 ? HIPBLAS_R_32I  :
-//         value == "i8_c"                  ? HIPBLAS_C_8I   :
-//         value == "i32_c"                 ? HIPBLAS_C_32I  :
-//         value == "u8_r"                  ? HIPBLAS_R_8U   :
-//         value == "u32_r"                 ? HIPBLAS_R_32U  :
-//         value == "u8_c"                  ? HIPBLAS_C_8U   :
-//         value == "u32_c"                 ? HIPBLAS_C_32U  :
-//         static_cast<hipblasDatatype_t>(-1);
-// }
 
 // // return precision string for rocblas_datatype
 // constexpr auto rocblas_datatype2hipblas_datatype(rocblas_datatype type)

@@ -216,20 +216,20 @@ constexpr auto rocblas_datatype2string(rocblas_datatype type)
 
 // Absolute value
 template <typename T, typename std::enable_if<!is_complex<T>, int>::type = 0>
-__device__ __host__ inline T rocblas_abs(T x)
+__device__ __host__ inline T driver_abs(T x)
 {
     return x < 0 ? -x : x;
 }
 
 // For complex, we have defined a __device__ __host__ compatible std::abs
 template <typename T, typename std::enable_if<is_complex<T>, int>::type = 0>
-__device__ __host__ inline auto rocblas_abs(T x)
+__device__ __host__ inline auto driver_abs(T x)
 {
     return std::abs(x);
 }
 
 // driver_half
-__device__ __host__ inline driver_half rocblas_abs(driver_half x)
+__device__ __host__ inline driver_half driver_abs(driver_half x)
 {
     union
     {
@@ -241,7 +241,7 @@ __device__ __host__ inline driver_half rocblas_abs(driver_half x)
 }
 
 // driver_bfloat16 is handled specially
-__device__ __host__ inline driver_bfloat16 rocblas_abs(driver_bfloat16 x)
+__device__ __host__ inline driver_bfloat16 driver_abs(driver_bfloat16 x)
 {
     x.data &= 0x7fff;
     return x;
@@ -278,7 +278,7 @@ void normalizeInputs(driver_operation transa,
                 T scal = T(0);
                 for(size_t k = 0; k < m; ++k)
                 {
-                    T val = T(rocblas_abs(a[i * stride_a + j * lda + k]));
+                    T val = T(driver_abs(a[i * stride_a + j * lda + k]));
                     if(val > scal)
                         scal = val;
                 }
@@ -305,7 +305,7 @@ void normalizeInputs(driver_operation transa,
                 T scal = T(0);
                 for(size_t k = 0; k < m; ++k)
                 {
-                    T val = T(rocblas_abs(a[i * stride_a + k * lda + j]));
+                    T val = T(driver_abs(a[i * stride_a + k * lda + j]));
                     if(val > scal)
                         scal = val;
                 }
