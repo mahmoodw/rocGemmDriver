@@ -69,6 +69,7 @@ hipblasBfloat16_ex::hipblasBfloat16_ex(double val)
 #define string2driver_type string2hipblas_datatype
 #define driver_algo hipblasGemmAlgo_t
 #define driver_stride hipblasStride
+#define driver_is_complex is_complex
 
 /*! \brief  generate a random number in HPL-like [-0.5,0.5] doubles  */
 template <typename T>
@@ -112,23 +113,23 @@ inline hipblasHalf random_generator<hipblasHalf>()
 };
 
 template <typename T>
-static constexpr bool is_complex = false;
+static constexpr bool driver_is_complex = false;
 
 template <>
-HIPBLAS_CLANG_STATIC constexpr bool is_complex<hipblasComplex> = true;
+HIPBLAS_CLANG_STATIC constexpr bool driver_is_complex<hipblasComplex> = true;
 
 template <>
-HIPBLAS_CLANG_STATIC constexpr bool is_complex<hipblasDoubleComplex> = true;
+HIPBLAS_CLANG_STATIC constexpr bool driver_is_complex<hipblasDoubleComplex> = true;
 
 // Absolute value
-template <typename T, typename std::enable_if<!is_complex<T>, int>::type = 0>
+template <typename T, typename std::enable_if<!driver_is_complex<T>, int>::type = 0>
 __device__ __host__ inline T driver_abs(T x)
 {
     return x < 0 ? -x : x;
 }
 
 // For complex, we have defined a __device__ __host__ compatible std::abs
-template <typename T, typename std::enable_if<is_complex<T>, int>::type = 0>
+template <typename T, typename std::enable_if<driver_is_complex<T>, int>::type = 0>
 __device__ __host__ inline auto driver_abs(T x)
 {
     return std::abs(x);

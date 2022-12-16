@@ -863,6 +863,22 @@ inline const char* driver_status_to_string(driver_status status)
     }
 }
 
+#define CHECK_HIP_ERROR(ERROR)                    \
+    do                                            \
+    {                                             \
+        auto error = ERROR;                       \
+        if(error != hipSuccess)                   \
+        {                                         \
+            fprintf(stderr,                       \
+                    "error: '%s'(%d) at %s:%d\n", \
+                    hipGetErrorString(error),     \
+                    error,                        \
+                    __FILE__,                     \
+                    __LINE__);                    \
+            exit(EXIT_FAILURE);                   \
+        }                                         \
+    } while(0)
+
 // #ifdef HIPBLAS
 // #define driver_operation hipblasOperation_t
 // #define char2driver_operation char2hipblas_operation
@@ -987,13 +1003,13 @@ inline bool rocblas_isnan(T)
 }
 
 template <typename T,
-          typename std::enable_if<!std::is_integral<T>{} && !is_complex<T>, int>::type = 0>
+          typename std::enable_if<!std::is_integral<T>{} && !driver_is_complex<T>, int>::type = 0>
 inline bool rocblas_isnan(T arg)
 {
     return std::isnan(arg);
 }
 
-template <typename T, typename std::enable_if<is_complex<T>, int>::type = 0>
+template <typename T, typename std::enable_if<driver_is_complex<T>, int>::type = 0>
 inline bool rocblas_isnan(const T& arg)
 {
     return rocblas_isnan(std::real(arg)) || rocblas_isnan(std::imag(arg));
@@ -1937,13 +1953,13 @@ struct Arguments
     }
 
 private:
-    template <typename T, typename U, typename std::enable_if<!is_complex<T>, int>::type = 0>
+    template <typename T, typename U, typename std::enable_if<!driver_is_complex<T>, int>::type = 0>
     static T convert_alpha_beta(U r, U i)
     {
         return T(r);
     }
 
-    template <typename T, typename U, typename std::enable_if<+is_complex<T>, int>::type = 0>
+    template <typename T, typename U, typename std::enable_if<+driver_is_complex<T>, int>::type = 0>
     static T convert_alpha_beta(U r, U i)
     {
         return T(r, i);

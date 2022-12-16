@@ -15,6 +15,7 @@
 #define string2driver_type string2rocblas_datatype
 #define driver_algo rocblas_gemm_algo
 #define driver_stride rocblas_stride
+#define driver_is_complex rocblas_is_complex
 
 inline void rocblas_expect_status(rocblas_status status, rocblas_status expect)
 {
@@ -260,14 +261,14 @@ constexpr auto rocblas_datatype2string(rocblas_datatype type)
 /*  Convert lapack char constants to rocblas type. */
 
 // Absolute value
-template <typename T, typename std::enable_if<!is_complex<T>, int>::type = 0>
+template <typename T, typename std::enable_if<!driver_is_complex<T>, int>::type = 0>
 __device__ __host__ inline T driver_abs(T x)
 {
     return x < 0 ? -x : x;
 }
 
 // For complex, we have defined a __device__ __host__ compatible std::abs
-template <typename T, typename std::enable_if<is_complex<T>, int>::type = 0>
+template <typename T, typename std::enable_if<driver_is_complex<T>, int>::type = 0>
 __device__ __host__ inline auto driver_abs(T x)
 {
     return std::abs(x);
