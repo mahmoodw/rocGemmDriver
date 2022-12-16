@@ -1141,19 +1141,19 @@ inline driver_bfloat16 negate(driver_bfloat16 x)
 //     return std::uniform_real_distribution<double>(-0.5, 0.5)(rocblas_rng);
 // }
 
-#ifdef HIPBLAS
+// #ifdef HIPBLAS
+// // template <>
+// // inline driver_bfloat16 random_hpl_generator()
+// // {
+// //     return driver_bfloat16(__double2bfloat16(std::uniform_real_distribution<double>(-0.5, 0.5)(rocblas_rng)));
+// // }
+// #else
 // template <>
 // inline driver_bfloat16 random_hpl_generator()
 // {
-//     return driver_bfloat16(__double2bfloat16(std::uniform_real_distribution<double>(-0.5, 0.5)(rocblas_rng)));
+//     return driver_bfloat16(std::uniform_real_distribution<double>(-0.5, 0.5)(rocblas_rng));
 // }
-#else
-template <>
-inline driver_bfloat16 random_hpl_generator()
-{
-    return driver_bfloat16(std::uniform_real_distribution<double>(-0.5, 0.5)(rocblas_rng));
-}
-#endif
+// #endif
 
 /* ============================================================================================ */
 /*! \brief  base-class to allocate/deallocate device memory */
@@ -2886,30 +2886,6 @@ static void init_constant_gemm(driver_operation transa,
     init_constant_matrix<T>(b, transb == driver_operation_none ? k : n, transb == driver_operation_none ? n : k, ldb, stride_b, batch, val);
     init_constant_matrix<U>(c, m, n, ldc, stride_c, batch, U(val));
 }
-
-// #ifdef HIPBLAS
-// #define driver_operation hipblasOperation_t
-// #define char2driver_operation char2hipblas_operation
-// #define driver_operation_none HIPBLAS_OP_N
-// #define driver_gemm hipblasGemm
-// #define driver_gemm_strided_batched hipblasGemmStridedBatched
-// #define driver_gemm_ex hipblasGemmEx
-// #define driver_type(X) driver_type2hipblas_datatype(X)
-// #define driver_algo(X) rocblas_algo2hipblas_algo(X)
-// #define driver_output_type(X) driver_type2hipblas_datatype(X)
-// auto driver_gemm = hipblasGemm;
-// #else
-// #define driver_operation rocblas_operation
-// #define char2driver_operation char2rocblas_operation
-// #define driver_operation_none rocblas_operation_none
-// #define driver_gemm rocblas_gemm
-// #define driver_gemm_strided_batched rocblas_gemm_strided_batched
-// #define driver_gemm_ex rocblas_gemm_ex
-// #define driver_type(X) X
-// #define driver_algo(X) X
-// #define driver_output_type(X) X
-// auto driver_gemm = rocblas_gemm;
-// #endif
 
 
 #endif /* _UTILITY_ */
