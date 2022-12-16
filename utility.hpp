@@ -840,29 +840,6 @@ void set_device(int device_id)
     }
 }
 
-inline const char* driver_status_to_string(driver_status status)
-{
-    switch(status)
-    {
-    case driver_status_success:
-        return "driver_status_success";
-    case driver_status_invalid_handle:
-        return "driver_status_invalid_handle";
-    case driver_status_not_implemented:
-        return "driver_status_not_implemented";
-    case driver_status_invalid_pointer:
-        return "driver_status_invalid_pointer";
-    case driver_status_invalid_size:
-        return "driver_status_invalid_size";
-    case driver_status_memory_error:
-        return "driver_status_memory_error";
-    case driver_status_internal_error:
-        return "driver_status_internal_error";
-    default:
-        return "<undefined driver_status value>";
-    }
-}
-
 #define CHECK_HIP_ERROR(ERROR)                    \
     do                                            \
     {                                             \
