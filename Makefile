@@ -20,6 +20,7 @@ endif
 endif
 endif
 
+ifneq ($(BUILD_WITH_HIPBLAS),1)
 ifeq ($(ROCBLASPATH),)
 ROCBLASLIB = -lrocblas -L /opt/rocm/rocblas/lib/
 ROCBLASINCL = -I /opt/rocm/rocblas/include/
@@ -30,6 +31,7 @@ ROCBLASINCL = -I $(ROCBLASPATH)/library/include/ -I $(ROCBLASPATH)/build/debug/i
 else
 ROCBLASLIB = -lrocblas -L $(ROCBLASPATH)/build/release/library/src/ -rpath $(ROCBLASPATH)/build/release/library/src/
 ROCBLASINCL = -I $(ROCBLASPATH)/library/include/ -I $(ROCBLASPATH)/build/release/include/ -I $(ROCBLASPATH)/build/release/include/internal
+endif
 endif
 endif
 
