@@ -293,11 +293,11 @@ __device__ __host__ inline driver_bfloat16 driver_abs(driver_bfloat16 x)
     return x;
 }
 
-// // Output driver_half value
-// inline std::ostream& operator<<(std::ostream& os, driver_half x)
-// {
-//     return os << float(x);
-// }
+// Output driver_half value
+inline std::ostream& operator<<(std::ostream& os, driver_half x)
+{
+    return os << float(x);
+}
 
 template <typename T>
 void normalizeInputs(driver_operation transa,
