@@ -19,6 +19,19 @@
 /* ============================================================================================ */
 /*  Convert rocblas constants to lapack char. */
 
+/*! \brief  generate a random number in HPL-like [-0.5,0.5] doubles  */
+template <typename T>
+inline T random_hpl_generator()
+{
+    return std::uniform_real_distribution<double>(-0.5, 0.5)(rocblas_rng);
+}
+
+template <>
+inline rocblas_bfloat16 random_hpl_generator()
+{
+    return rocblas_bfloat16(std::uniform_real_distribution<double>(-0.5, 0.5)(rocblas_rng));
+}
+
 /*! \brief  generate a random number in range [1,2,3,4,5,6,7,8,9,10] */
 template <typename T>
 inline T random_generator()
