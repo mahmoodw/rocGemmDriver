@@ -863,38 +863,6 @@ inline const char* driver_status_to_string(driver_status status)
     }
 }
 
-inline void rocblas_expect_status(driver_status status, driver_status expect)
-{
-    if(status != expect)
-    {
-        std::cerr << "rocBLAS status error: Expected " << driver_status_to_string(expect)
-                  << ", received " << driver_status_to_string(status) << std::endl;
-        if(expect == driver_status_success)
-            exit(EXIT_FAILURE);
-    }
-}
-
-#define CHECK_HIP_ERROR(ERROR)                    \
-    do                                            \
-    {                                             \
-        auto error = ERROR;                       \
-        if(error != hipSuccess)                   \
-        {                                         \
-            fprintf(stderr,                       \
-                    "error: '%s'(%d) at %s:%d\n", \
-                    hipGetErrorString(error),     \
-                    error,                        \
-                    __FILE__,                     \
-                    __LINE__);                    \
-            exit(EXIT_FAILURE);                   \
-        }                                         \
-    } while(0)
-
-#define EXPECT_driver_status rocblas_expect_status
-
-#define CHECK_ROCBLAS_ERROR2(STATUS) EXPECT_driver_status(STATUS, driver_status_success)
-#define CHECK_ROCBLAS_ERROR(STATUS) CHECK_ROCBLAS_ERROR2(STATUS)
-
 // #ifdef HIPBLAS
 // #define driver_operation hipblasOperation_t
 // #define char2driver_operation char2hipblas_operation

@@ -16,6 +16,38 @@
 #define driver_algo rocblas_gemm_algo
 #define driver_stride rocblas_stride
 
+inline void rocblas_expect_status(rocblas_status status, rocblas_status expect)
+{
+    if(status != expect)
+    {
+        std::cerr << "rocBLAS status error: Expected " << rocblas_status_to_string(expect)
+                  << ", received " << rocblas_status_to_string(status) << std::endl;
+        if(expect == rocblas_status_success)
+            exit(EXIT_FAILURE);
+    }
+}
+
+#define CHECK_HIP_ERROR(ERROR)                    \
+    do                                            \
+    {                                             \
+        auto error = ERROR;                       \
+        if(error != hipSuccess)                   \
+        {                                         \
+            fprintf(stderr,                       \
+                    "error: '%s'(%d) at %s:%d\n", \
+                    hipGetErrorString(error),     \
+                    error,                        \
+                    __FILE__,                     \
+                    __LINE__);                    \
+            exit(EXIT_FAILURE);                   \
+        }                                         \
+    } while(0)
+
+#define EXPECT_ROCBLAS_STATUS rocblas_expect_status
+
+#define CHECK_ROCBLAS_ERROR2(STATUS) EXPECT_ROCBLAS_STATUS(STATUS, rocblas_status_success)
+#define CHECK_ROCBLAS_ERROR(STATUS) CHECK_ROCBLAS_ERROR2(STATUS)
+
 /* ============================================================================================ */
 /*  Convert rocblas constants to lapack char. */
 
