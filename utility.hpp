@@ -2466,7 +2466,7 @@ void readArgs(int argc, char* argv[], Arguments& arg)
 
     ("function,f",
         po::value<std::string>(&function)->default_value("gemm"),
-        "GEMM function to test. (gemm, gemm_strided_batched and gemm_ex")
+        "GEMM function to test. (gemm, gemm_strided_batched, gemm_strided_batched_ex and gemm_ex")
 
     ("precision,r",
         po::value<std::string>(&precision)->default_value("f32_r"), "Precision. "
