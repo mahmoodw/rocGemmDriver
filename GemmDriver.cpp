@@ -2418,6 +2418,7 @@ int main(int argc, char* argv[])
             rocblas_cout << "Precision not implemented, exiting";
             return rocblas_status_not_implemented;
         }
+        overall_gflops *= arg.batch_count;
         overall_gflops /= overall_time / 1e6 / multi_device; 
 
         rocblas_cout<<"Overall performance using host timing"<<std::endl
