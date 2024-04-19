@@ -6,7 +6,7 @@ Getting Started
 
 The install script gathers and builds neccessary libraries depending on whether validation is needed. This is specified via the -v flag by the user as follows:
 ```
-$ ./install -v 1
+$ ./install.sh -v 1
 ```
 Note: A user may choose to point to a local copy of rocblas by using the -r (--rocblas) flag and specifying the base rocblas directory.
 

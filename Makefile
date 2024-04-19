@@ -42,28 +42,28 @@ endif
 ifeq ($(VALIDATE),1)
 ifeq ($(DEBUG),1)
 GemmDriver.o: GemmDriver.cpp utility.hpp validate.hpp flame_interface.hpp
-	/opt/rocm/bin/hipcc -g -c GemmDriver.cpp -std=c++14 $(CFLAGS) $(ROCBLASINCL) -I extern/flame/include/ -DVALIDATE
+	/opt/rocm/bin/hipcc -g -c GemmDriver.cpp -std=c++17 $(CFLAGS) $(ROCBLASINCL) -I extern/flame/include/ -DVALIDATE
 else
 GemmDriver.o: GemmDriver.cpp utility.hpp validate.hpp flame_interface.hpp
-	/opt/rocm/bin/hipcc -c GemmDriver.cpp -std=c++14 $(CFLAGS) $(ROCBLASINCL) -I extern/flame/include/ -DVALIDATE
+	/opt/rocm/bin/hipcc -c GemmDriver.cpp -std=c++17 $(CFLAGS) $(ROCBLASINCL) -I extern/flame/include/ -DVALIDATE
 endif
 else
 ifeq ($(DEBUG),1)
 GemmDriver.o: GemmDriver.cpp utility.hpp
-	/opt/rocm/bin/hipcc -g -c GemmDriver.cpp -std=c++14 $(CFLAGS) $(ROCBLASINCL) 
+	/opt/rocm/bin/hipcc -g -c GemmDriver.cpp -std=c++17 $(CFLAGS) $(ROCBLASINCL) 
 else
 GemmDriver.o: GemmDriver.cpp utility.hpp
-	/opt/rocm/bin/hipcc -c GemmDriver.cpp -std=c++14 $(CFLAGS) $(ROCBLASINCL) 
+	/opt/rocm/bin/hipcc -c GemmDriver.cpp -std=c++17 $(CFLAGS) $(ROCBLASINCL) 
 endif
 endif
 
 ifeq ($(VALIDATE),1)
 ifeq ($(DEBUG),1)
 blis_interface.o: blis_interface.cpp blis_interface.hpp utility.hpp
-	/opt/rocm/bin/hipcc -g -c blis_interface.cpp -std=c++14 -I extern/blis/include/blis/ $(CFLAGS) $(ROCBLASINCL)
+	/opt/rocm/bin/hipcc -g -c blis_interface.cpp -std=c++17 -I extern/blis/include/blis/ $(CFLAGS) $(ROCBLASINCL)
 else
 blis_interface.o: blis_interface.cpp blis_interface.hpp utility.hpp
-	/opt/rocm/bin/hipcc -c blis_interface.cpp -std=c++14 -I extern/blis/include/blis/ $(CFLAGS) $(ROCBLASINCL)
+	/opt/rocm/bin/hipcc -c blis_interface.cpp -std=c++17 -I extern/blis/include/blis/ $(CFLAGS) $(ROCBLASINCL)
 endif
 endif
 

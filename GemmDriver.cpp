@@ -78,171 +78,65 @@ void BenchGemmStridedBatched(const Arguments& arg, std::promise<std::pair<double
     static double cpu_time_used, cblas_gflops;
     int         deviceId;
     if(multi_device>1)
-        hipGetDevice(&deviceId);
+        CHECK_HIP_ERROR(hipGetDevice(&deviceId));
 
     double rocblas_error = 0.0;
-
-    size_t size_one_a
-        = transA == rocblas_operation_none ? size_t(K) * size_t(lda) : size_t(M) * size_t(lda);
-    size_t size_one_b
-        = transB == rocblas_operation_none ? size_t(N) * size_t(ldb) : size_t(K) * size_t(ldb);
-    size_t size_one_c = N * ldc;
-
-    size_t size_A = size_one_a + size_t(stride_a) * size_t(batch_count - 1);
-    size_t size_B = size_one_b + size_t(stride_b) * size_t(batch_count - 1);
-    size_t size_C = size_one_c + size_t(stride_c) * size_t(batch_count - 1);
-
-    // allocate memory on device
-    device_vector<T> dA(size_A);
-    device_vector<T> dB(size_B);
-    device_vector<T> dC(size_C);
-    device_vector<T> d_alpha(1);
-    device_vector<T> d_beta(1);
-    if((!dA && size_A) || (!dB && size_B) || (!dC && size_C) || !d_alpha || !d_beta)
-    {
-        CHECK_HIP_ERROR(hipErrorOutOfMemory);
-        return;
-    }
 
     bool vChecks = (arg.unit_check || arg.norm_check);
     bool transferOutput = (vChecks || storeOutputData);
 
-    // Naming: dX is in GPU (device) memory. hK is in CPU (host) memory, plz follow this practice
-    static host_vector<T> hA(size_A);
-    static host_vector<T> hB(size_B);
-    static host_vector<T> hC(size_C);
-    host_vector<T> hC_1(transferOutput ? size_C : 0);
-    static host_vector<T> hC_gold(vChecks ? size_C : 0);
-    static host_vector<T> hC_orig(arg.reinit_c ? size_C : 0);
+    static host_strided_batch_matrix<T> hA(A_row, A_col, lda, stride_a, batch_count);
+    static host_strided_batch_matrix<T> hB(B_row, B_col, ldb, stride_b, batch_count);
+    host_strided_batch_matrix<T> hC(M, N, ldc, stride_c, batch_count);
+
+    static host_strided_batch_matrix<T> hC_orig = (arg.reinit_c) ? host_strided_batch_matrix<T>(M, N, ldc, stride_c, batch_count)
+                           : host_strided_batch_matrix<T>(0, 1, 1, 1, 1);
+    static host_strided_batch_matrix<T> hC_gold = (vChecks) ? host_strided_batch_matrix<T>(M, N, ldc, stride_c, batch_count)
+                           : host_strided_batch_matrix<T>(0, 1, 1, 1, 1);
+
+    // Check host memory allocation
+    CHECK_HIP_ERROR(hA.memcheck());
+    CHECK_HIP_ERROR(hB.memcheck());
+    CHECK_HIP_ERROR(hC.memcheck());
+    CHECK_HIP_ERROR(hC_gold.memcheck());
+
+    // allocate memory on device
+    device_strided_batch_matrix<T> dA(A_row, A_col, lda, stride_a, batch_count);
+    device_strided_batch_matrix<T> dB(B_row, B_col, ldb, stride_b, batch_count);
+    device_strided_batch_matrix<T> dC(M, N, ldc, stride_c, batch_count);
+
+    device_vector<T> d_alpha(1);
+    device_vector<T> d_beta(1);
+    
+    // Check device memory allocation
+    CHECK_HIP_ERROR(dA.memcheck());
+    CHECK_HIP_ERROR(dB.memcheck());
+    CHECK_HIP_ERROR(dC.memcheck());
+    CHECK_HIP_ERROR(d_alpha.memcheck());
+    CHECK_HIP_ERROR(d_beta.memcheck());
 
     // Initial Data on CPU
     if((multi_device>1 && deviceId==0) || multi_device == 1)
     {
-        if(arg.initialization == rocblas_initialization_random_int)
+        if(arg.initialization == rocblas_initialization_file)
+            loadFromBin<T>(hA, a_file, hB, b_file, hC, c_file);
+        else
         {
-            //  Old
-            rocblas_seedrand();
-            rocblas_init<T>(hA, A_row, A_col, lda, stride_a, batch_count);
-            rocblas_init_alternating_sign<T>(hB, B_row, B_col, ldb, stride_b, batch_count);
-            if(rocblas_isnan(arg.beta))
-                rocblas_init_nan<T>(hC, M, N, ldc, stride_c, batch_count);
-            else
-                rocblas_init<T>(hC, M, N, ldc, stride_c, batch_count);
+            // Initialize data on host memory
+            rocblas_init_matrix(
+                hA, arg, rocblas_client_alpha_sets_nan, rocblas_client_general_matrix, true);
+            rocblas_init_matrix<T, true>(
+                hB, arg, rocblas_client_alpha_sets_nan, rocblas_client_general_matrix, false, true);
+            rocblas_init_matrix<T, true>(hC, arg, rocblas_client_beta_sets_nan, rocblas_client_general_matrix);
+
+            if(arg.initialization == rocblas_initialization_random_broad)
+                normalizeInputs<T>(hA,hB);
         }
-        else if(arg.initialization == rocblas_initialization_random_narrow)
-        {
-            init_narrow_range_random_gemm<T>(transA,
-                                            transB,
-                                            M,
-                                            N,
-                                            K,
-                                            hA,
-                                            lda,
-                                            stride_a,
-                                            hB,
-                                            ldb,
-                                            stride_b,
-                                            hC,
-                                            ldc,
-                                            stride_c,
-                                            batch_count);
-        }
-        else if(arg.initialization == rocblas_initialization_random_broad)
-        {
-            init_broad_range_random_gemm<T>(transA,
-                                            transB,
-                                            M,
-                                            N,
-                                            K,
-                                            hA,
-                                            lda,
-                                            stride_a,
-                                            hB,
-                                            ldb,
-                                            stride_b,
-                                            hC,
-                                            ldc,
-                                            stride_c,
-                                            batch_count);
-        }
-        else if(arg.initialization == rocblas_initialization_random_full)
-        {
-            init_full_range_random_gemm<T>(transA,
-                                        transB,
-                                        M,
-                                        N,
-                                        K,
-                                        hA,
-                                        lda,
-                                        stride_a,
-                                        hB,
-                                        ldb,
-                                        stride_b,
-                                        hC,
-                                        ldc,
-                                        stride_c,
-                                        batch_count);
-        }
-        else if(arg.initialization == rocblas_initialization_const)
-        {
-            init_constant_gemm<T>(transA,
-                                transB,
-                                M,
-                                N,
-                                K,
-                                hA,
-                                lda,
-                                stride_a,
-                                hB,
-                                ldb,
-                                stride_b,
-                                hC,
-                                ldc,
-                                stride_c,
-                                batch_count,
-                                arg.initVal);
-        }
-        else if(arg.initialization == rocblas_initialization_trig_float)
-        {
-            rocblas_init_sin<T>(hA, A_row, A_col, lda, stride_a, batch_count);
-            rocblas_init_cos<T>(hB, B_row, B_col, ldb, stride_b, batch_count);
-            if(rocblas_isnan(arg.beta))
-                rocblas_init_nan<T>(hC, M, N, ldc, stride_c, batch_count);
-            else
-                rocblas_init_sin<T>(hC, M, N, ldc, stride_c, batch_count);
-        }
-        else if(arg.initialization == rocblas_initialization_hpl)
-        {
-            rocblas_seedrand();
-            rocblas_init_hpl<T>(hA, A_row, A_col, lda, stride_a, batch_count);
-            rocblas_init_hpl<T>(hB, B_row, B_col, ldb, stride_b, batch_count);
-            if(rocblas_isnan(arg.beta))
-                rocblas_init_nan<T>(hC, M, N, ldc, stride_c, batch_count);
-            else
-                rocblas_init_hpl<T>(hC, M, N, ldc, stride_c, batch_count);
-        }
-        else if(arg.initialization == rocblas_initialization_file)
-        {
-            loadFromBin(transA,
-                        transB,
-                        M,
-                        N,
-                        K,
-                        hA,
-                        lda,
-                        a_file,
-                        hB,
-                        ldb,
-                        b_file,
-                        hC,
-                        ldc,
-                        c_file,
-                        batch_count);
-        }
+
         if(vChecks)
-            hC_gold = hC;
+            hC_gold.copy_from(hC);
         if(reinit_c)
-            hC_orig = hC;
+            hC_orig.copy_from(hC);
         memBarrier.wait();
     }
     else
@@ -250,13 +144,13 @@ void BenchGemmStridedBatched(const Arguments& arg, std::promise<std::pair<double
 
     if(storeInitData)
     {
-        storeInitToBin<T,T>(transA, transB, M, N, K, hA, lda, a_file, hB, ldb, b_file, hC, ldc, c_file, batch_count);
+        storeInitToBin<T,T>(hA, a_file, hB, b_file, hC, c_file);
     }
 
     // copy data from CPU to device
-    CHECK_HIP_ERROR(hipMemcpy(dA, hA, sizeof(T) * size_A, hipMemcpyHostToDevice));
-    CHECK_HIP_ERROR(hipMemcpy(dB, hB, sizeof(T) * size_B, hipMemcpyHostToDevice));
-    CHECK_HIP_ERROR(hipMemcpy(dC, hC, sizeof(T) * size_C, hipMemcpyHostToDevice));
+    CHECK_HIP_ERROR(dA.transfer_from(hA));
+    CHECK_HIP_ERROR(dB.transfer_from(hB));
+    CHECK_HIP_ERROR(dC.transfer_from(hC));
 
 #ifdef VALIDATE
     if(arg.norm_check)
@@ -282,12 +176,12 @@ void BenchGemmStridedBatched(const Arguments& arg, std::promise<std::pair<double
                                                             ldc,
                                                             stride_c,
                                                             batch_count));
-        CHECK_HIP_ERROR(hipMemcpy(hC_1, dC, sizeof(T) * size_C, hipMemcpyDeviceToHost));
+        CHECK_HIP_ERROR(hC.transfer_from(dC));
 
         // ROCBLAS rocblas_pointer_mode_device
         CHECK_ROCBLAS_ERROR(rocblas_set_pointer_mode(handle, rocblas_pointer_mode_device));
 
-        CHECK_HIP_ERROR(hipMemcpy(dC, hC, sizeof(T) * size_C, hipMemcpyHostToDevice));
+        CHECK_HIP_ERROR(dC.transfer_from(hC_gold));
         CHECK_HIP_ERROR(hipMemcpy(d_alpha, &h_alpha, sizeof(T), hipMemcpyHostToDevice));
         CHECK_HIP_ERROR(hipMemcpy(d_beta, &h_beta, sizeof(T), hipMemcpyHostToDevice));
 
@@ -344,38 +238,33 @@ void BenchGemmStridedBatched(const Arguments& arg, std::promise<std::pair<double
             }
         }
 
-        //releasing already used host memory
-        hA=host_vector<T>();
-        hB=host_vector<T>();
-        hC=host_vector<T>();
-
         for(int i=0; i<2; i++)
         {
             if(arg.unit_check)
             {
-                if(std::is_same<T, rocblas_half> {} && K > 10000)
+                if(std::is_same_v<T, rocblas_half> && K > 10000)
                 {
                     // For large K, rocblas_half tends to diverge proportional to K
                     // Tolerance is slightly greater than 1 / 1024.0
                     const double tol = K * sum_error_tolerance<T>;
-                    near_check_general<T>(M, N, batch_count, ldc, stride_c, hC_gold, hC_1, tol);
+                    near_check_general<T>(M, N, batch_count, ldc, stride_c, hC_gold, hC, tol);
                 }
                 else
                 {
-                    unit_check_general<T>(M, N, batch_count, ldc, stride_c, hC_gold, hC_1);
+                    unit_check_general<T>(M, N, batch_count, ldc, stride_c, hC_gold, hC);
                 }
             }
 
             if(arg.norm_check)
             {
                 double error
-                    = fabs(norm_check_general<T>('F', M, N, ldc, stride_c, batch_count, hC_gold, hC_1));
+                    = fabs(norm_check_general<T>('F', M, N, ldc, stride_c, batch_count, hC_gold, hC));
 
                 rocblas_error = error > rocblas_error ? error : rocblas_error;
             }
             if(i==0)
             {
-                CHECK_HIP_ERROR(hipMemcpy(hC_1, dC, sizeof(T) * size_C, hipMemcpyDeviceToHost));
+                CHECK_HIP_ERROR(hC.transfer_from(dC));
             }
         }
     }
@@ -384,9 +273,9 @@ void BenchGemmStridedBatched(const Arguments& arg, std::promise<std::pair<double
     int number_cold_calls = 2;
     int number_hot_calls  = arg.iters;
     hipEvent_t start, stop, flush;
-    hipEventCreateWithFlags(&flush, hipEventReleaseToSystem);
-    hipEventCreate(&start);
-    hipEventCreate(&stop);
+    CHECK_HIP_ERROR(hipEventCreateWithFlags(&flush, hipEventReleaseToSystem));
+    CHECK_HIP_ERROR(hipEventCreate(&start));
+    CHECK_HIP_ERROR(hipEventCreate(&stop));
     float kernel_time = 0.0f;
     host_time        = 0.0;
     float kernel_time_iter = 0.0f;
@@ -421,12 +310,12 @@ void BenchGemmStridedBatched(const Arguments& arg, std::promise<std::pair<double
         for(int i = 0; i < number_hot_calls; i++)
         {
             if(reinit_c && ((arg.norm_check && i == 0) || i > 0))
-                CHECK_HIP_ERROR(hipMemcpy(dC, hC_orig, sizeof(T) * size_C, hipMemcpyHostToDevice));
+                CHECK_HIP_ERROR(dC.transfer_from(hC_orig));
             if(arg.flush_gpu_cache)
-                hipEventRecord(flush, NULL);
+                CHECK_HIP_ERROR(hipEventRecord(flush, NULL));
 
             host_time_iter = get_time_us();
-            hipEventRecord(start, NULL);
+            CHECK_HIP_ERROR(hipEventRecord(start, NULL));
 
             rocblas_gemm_strided_batched<T>(handle,
                                         transA,
@@ -447,10 +336,10 @@ void BenchGemmStridedBatched(const Arguments& arg, std::promise<std::pair<double
                                         stride_c,
                                         batch_count);
 
-            hipEventRecord(stop, NULL);
-            hipEventSynchronize(stop);
+            CHECK_HIP_ERROR(hipEventRecord(stop, NULL));
+            CHECK_HIP_ERROR(hipEventSynchronize(stop));
             host_time += get_time_us() - host_time_iter;
-            hipEventElapsedTime(&kernel_time_iter, start, stop);
+            CHECK_HIP_ERROR(hipEventElapsedTime(&kernel_time_iter, start, stop));
             kernel_time+=kernel_time_iter;
         }
     }
@@ -463,7 +352,7 @@ void BenchGemmStridedBatched(const Arguments& arg, std::promise<std::pair<double
             perfBarrier.wait(deviceId);
         }
         times.first = get_time_us(); // in microseconds
-        hipEventRecord(start, NULL);
+        CHECK_HIP_ERROR(hipEventRecord(start, NULL));
         for(int i = 0; i < number_hot_calls; i++)
         {
             rocblas_gemm_strided_batched<T>(handle,
@@ -486,19 +375,19 @@ void BenchGemmStridedBatched(const Arguments& arg, std::promise<std::pair<double
                                         batch_count);
         }
 
-        hipEventRecord(stop, NULL);
-        hipEventSynchronize(stop);
+        CHECK_HIP_ERROR(hipEventRecord(stop, NULL));
+        CHECK_HIP_ERROR(hipEventSynchronize(stop));
         times.second = get_time_us();
         if(multi_device>1)
             promise.set_value(times);
-        hipEventElapsedTime(&kernel_time, start, stop);
+        CHECK_HIP_ERROR(hipEventElapsedTime(&kernel_time, start, stop));
         host_time = times.second-times.first;
     }
 
     if(storeOutputData)
     {
-        CHECK_HIP_ERROR(hipMemcpy(hC_1, dC, sizeof(T) * size_C, hipMemcpyDeviceToHost));
-        storeOutputToBin<T>(N, hC_1, ldc, o_file, batch_count);
+        CHECK_HIP_ERROR(hC.transfer_from(dC));
+        storeOutputToBin<T>(hC, o_file);
     }
 
     rocblas_gflops = gemm_gflop_count<T>(M, N, K) * batch_count * number_hot_calls  / kernel_time * 1e3;
@@ -540,15 +429,15 @@ void BenchGemmEx(Arguments& arg, std::promise<std::pair<double,double>> promise)
     uint32_t          flags          = arg.flags;
 
     bool nantest = rocblas_isnan(arg.beta) || rocblas_isnan(arg.betai);
-    if(!std::is_same<To, float>{} && !std::is_same<To, double>{}
-       && !std::is_same<To, rocblas_half>{} && !rocblas_is_complex<To> && nantest)
+    if(!std::is_same_v<To, float> && !std::is_same<To, double>{}
+       && !std::is_same_v<To, rocblas_half> && !rocblas_is_complex<To> && nantest)
         return; // Exclude integers or other types which don't support NaN
 
     Tc h_alpha_Tc = arg.get_alpha<Tc>();
     Tc h_beta_Tc  = arg.get_beta<Tc>();
 
-    rocblas_int reinit_c = arg.reinit_c && h_beta_Tc != 0;
     rocblas_int c_equals_d = arg.c_equals_d;
+    rocblas_int reinit_c = arg.reinit_c && h_beta_Tc != 0 && c_equals_d;
     rocblas_int time_each_iter = arg.time_each_iter || reinit_c || arg.flush_gpu_cache;
     rocblas_int tensile_timing = arg.tensile_timing;
 
@@ -559,7 +448,7 @@ void BenchGemmEx(Arguments& arg, std::promise<std::pair<double,double>> promise)
     int           deviceId;
 
     if(multi_device>1)
-        hipGetDevice(&deviceId);
+        CHECK_HIP_ERROR(hipGetDevice(&deviceId));
 
     rocblas_local_handle handle;
     auto                 transA = char2rocblas_operation(arg.transA);
@@ -570,10 +459,11 @@ void BenchGemmEx(Arguments& arg, std::promise<std::pair<double,double>> promise)
     auto                 A_col = transA == rocblas_operation_none ? K : M;
     auto                 B_row = transB == rocblas_operation_none ? K : N;
     auto                 B_col = transB == rocblas_operation_none ? N : K;
+    auto                 d_type = arg.d_type;
 
     // check for invalid sizes
     if(M < 0 || N < 0 || K < 0 || lda < A_row || ldb < B_row || ldc < M || (ldd < M && !c_equals_d)
-       || (std::is_same<Ti, int8_t> {}
+       || (std::is_same_v<Ti, int8_t> 
            && (K % 4 != 0 || (transA != rocblas_operation_none && lda % 4 != 0)
                || (transB == rocblas_operation_none && ldb % 4 != 0))))
     {
@@ -581,160 +471,98 @@ void BenchGemmEx(Arguments& arg, std::promise<std::pair<double,double>> promise)
         exit(1);
     }
 
-    const size_t size_A = size_t(lda) * size_t(A_col);
-    const size_t size_B = size_t(ldb) * size_t(B_col);
-    const size_t size_C = size_t(ldc) * size_t(N);
-    const size_t size_D = c_equals_d ? 0 : size_t(ldd) * size_t(N);
-
-    // allocate memory on device
-    device_vector<Ti> dA(size_A);
-    device_vector<Ti> dB(size_B);
-    device_vector<To> dC(size_C);
-    device_vector<To> dD(size_D);
-    device_vector<Tc> d_alpha_Tc(1);
-    device_vector<Tc> d_beta_Tc(1);
-    if(!dA || !dB || !dC || !dD || !d_alpha_Tc || !d_beta_Tc)
+    if(arg.c_equals_d)
     {
-        CHECK_HIP_ERROR(hipErrorOutOfMemory);
-        return;
+        ldd    = ldc;
+        d_type = arg.c_type;
     }
+
+    rocblas_stride stride_a = size_t(lda) * A_col;
+    rocblas_stride stride_b = size_t(ldb) * B_col;
+    rocblas_stride stride_c = size_t(ldc) * N;
+    rocblas_stride stride_d = !arg.c_equals_d ? size_t(ldd) * N : 0;
+
+    rocblas_stride aligned_stride_a = align_stride<Ti>(stride_a);
+    rocblas_stride aligned_stride_b = align_stride<Ti>(stride_b);
+    rocblas_stride aligned_stride_c = align_stride<To>(stride_c);
+    rocblas_stride aligned_stride_d = align_stride<To>(stride_d);
+
+    // size_t flush_batch_count = 1;
+    // if(arg.timing)
+    // {
+        // size_t a_size = M * K * sizeof(Ti);
+        // size_t b_size = K * N * sizeof(Ti);
+        // size_t c_size = M * N * sizeof(To);
+        // //      exclude d_size from cached_size calculation because
+        // //      - for arg.outofplace == false : D == C
+        // //      - for arg.outofplace == true  : D is write only
+        // size_t a_b_c_cached_size = a_size + b_size + c_size;
+
+        // flush_batch_count = calculate_flush_batch_count(
+        //     arg.flush_batch_count, arg.flush_memory_size, a_b_c_cached_size);
+    // }
 
     bool vChecks = (arg.unit_check || arg.norm_check);
     bool transferOutput = (vChecks || storeOutputData);
 
-    // Naming: dX is in GPU (device) memory. hK is in CPU (host) memory
-    static host_vector<Ti> hA(size_A);
-    static host_vector<Ti> hB(size_B);
-    static host_vector<To> hC(size_C);
-    host_vector<To> hC_1(transferOutput ? size_C : 0);
-    static host_vector<To> hC_gold(vChecks && c_equals_d ? size_C : 0);
-    host_vector<To> hD_1(size_D);
-    static host_vector<To> hD_gold(vChecks ? size_D : 0);
-    static host_vector<To> hC_orig(arg.reinit_c ? size_C : 0);
+    // Allocate host memory
+    static host_matrix<Ti> hA(A_row, A_col, lda);
+    static host_matrix<Ti> hB(B_row, B_col, ldb);
+    static host_matrix<To> hC(M, N, ldc);
+
+    host_matrix<To> hD      =  transferOutput ? host_matrix<To>(M, N, ldd) : host_matrix<To>(0, 1, 1);
+    static host_matrix<To> hD_gold =  vChecks ? host_matrix<To>(M, N, ldd) : host_matrix<To>(0, 1, 1);
+
+    // Check host memory allocation
+    CHECK_HIP_ERROR(hA.memcheck());
+    CHECK_HIP_ERROR(hB.memcheck());
+    CHECK_HIP_ERROR(hC.memcheck());
+
+    // allocate memory on device
+    device_strided_batch_matrix<Ti> dA(A_row, A_col, lda, aligned_stride_a, 1);
+    device_strided_batch_matrix<Ti> dB(B_row, B_col, ldb, aligned_stride_b, 1);
+    device_strided_batch_matrix<To> dC(M, N, ldc, aligned_stride_c, 1);
+    // if C!=D, allocate C and D normally
+    // if C==D, allocate C big enough for the larger of C and D; D points to C
+    device_strided_batch_matrix<To> dD_alloc
+        = !(arg.c_equals_d) ? device_strided_batch_matrix<To>(M, N, ldd, aligned_stride_d, 1)
+                           : device_strided_batch_matrix<To>(0, 1, 1, 1, 1);
+    device_strided_batch_matrix<To>& dD = !(arg.c_equals_d) ? dD_alloc : dC;
+
+    device_vector<Tc> d_alpha_Tc(1);
+    device_vector<Tc> d_beta_Tc(1);
+
+    // Check device memory allocation
+    CHECK_HIP_ERROR(dA.memcheck());
+    CHECK_HIP_ERROR(dB.memcheck());
+    CHECK_HIP_ERROR(dC.memcheck());
+    CHECK_HIP_ERROR(dD_alloc.memcheck());
+    CHECK_HIP_ERROR(d_alpha_Tc.memcheck());
+    CHECK_HIP_ERROR(d_beta_Tc.memcheck());
 
     if((multi_device>1 && deviceId==0) || multi_device == 1)
     {
-        if(arg.initialization == rocblas_initialization_random_int)
-        {
-            //  Old
-            rocblas_seedrand();
-            rocblas_init<Ti>(hA, A_row, A_col, lda);
-            rocblas_init_alternating_sign<Ti>(hB, B_row, B_col, ldb);
-            if(nantest)
-                rocblas_init_nan<To>(hC, M, N, ldc);
-            else
-                rocblas_init<To>(hC, M, N, ldc);
-        }
-        else if(arg.initialization == rocblas_initialization_random_narrow)
-        {
-            init_narrow_range_random_gemm<Ti,To>(transA,
-                                            transB,
-                                            M,
-                                            N,
-                                            K,
-                                            hA,
-                                            lda,
-                                            size_A,
-                                            hB,
-                                            ldb,
-                                            size_B,
-                                            hC,
-                                            ldc,
-                                            size_C);
-        }
-        else if(arg.initialization == rocblas_initialization_random_broad)
-        {
-            init_broad_range_random_gemm<Ti,To>(transA,
-                                            transB,
-                                            M,
-                                            N,
-                                            K,
-                                            hA,
-                                            lda,
-                                            size_A,
-                                            hB,
-                                            ldb,
-                                            size_B,
-                                            hC,
-                                            ldc,
-                                            size_C);
-        }
-        else if(arg.initialization == rocblas_initialization_random_full)
-        {
-            init_full_range_random_gemm<Ti,To>(transA,
-                                            transB,
-                                            M,
-                                            N,
-                                            K,
-                                            hA,
-                                            lda,
-                                            size_A,
-                                            hB,
-                                            ldb,
-                                            size_B,
-                                            hC,
-                                            ldc,
-                                            size_C);
-        }
-        else if(arg.initialization == rocblas_initialization_const)
-        {
-            init_constant_gemm<Ti,To>(transA,
-                                transB,
-                                M,
-                                N,
-                                K,
-                                hA,
-                                lda,
-                                size_A,
-                                hB,
-                                ldb,
-                                size_B,
-                                hC,
-                                ldc,
-                                size_C,
-                                Ti(arg.initVal));
-        }
-        else if(arg.initialization == rocblas_initialization_trig_float)
-        {
-            rocblas_init_sin<Ti>(hA, A_row, A_col, lda);
-            rocblas_init_cos<Ti>(hB, B_row, B_col, ldb);
-            if(rocblas_isnan(arg.beta))
-                rocblas_init_nan<To>(hC, M, N, ldc);
-            else
-                rocblas_init_sin<To>(hC, M, N, ldc);
-        }
-        else if(arg.initialization == rocblas_initialization_hpl)
-        {
-            rocblas_seedrand();
-            rocblas_init_hpl<Ti>(hA, A_row, A_col, lda);
-            rocblas_init_hpl<Ti>(hB, B_row, B_col, ldb);
-            if(rocblas_isnan(arg.beta))
-                rocblas_init_nan<To>(hC, M, N, ldc);
-            else
-                rocblas_init_hpl<To>(hC, M, N, ldc);
-        }
-        else if(arg.initialization == rocblas_initialization_file)
-        {
-            loadFromBin<Ti,To>(transA, transB, M, N, K, hA, lda, a_file, hB, ldb, b_file, hC, ldc, c_file, 1);
-        }
+        if(arg.initialization == rocblas_initialization_file)
+            loadFromBin<Ti, To>(hA, a_file, hB, b_file, hC, c_file);
         else
         {
-            rocblas_cout << "Invalid init type for Input type...exiting" << std::endl;
-            exit(1);
-        }
+            // Initialize data on host memory
+            rocblas_init_matrix(
+                hA, arg, rocblas_client_alpha_sets_nan, rocblas_client_general_matrix, true);
+            rocblas_init_matrix<Ti, true>(
+                hB, arg, rocblas_client_alpha_sets_nan, rocblas_client_general_matrix, false, true);
+            rocblas_init_matrix<To, true>(
+                hC, arg, rocblas_client_beta_sets_nan, rocblas_client_general_matrix);
 
-        if(!c_equals_d)
-            rocblas_init<To>(hD_1, M, N, ldd);
+            if(arg.initialization == rocblas_initialization_random_broad)
+                normalizeInputs<Ti>(hA,hB);
+        }
 
         if(vChecks)
         {
-            if(!c_equals_d)
-                hD_gold = hD_1;
-            else
-                hC_gold = hC;
+            rocblas_init_nan<To>(hD, M, N, ldd);
+            rocblas_init_nan<To>(hD_gold, M, N, ldd);
         }
-        if(reinit_c)
-            hC_orig = hC;
              
         memBarrier.wait();
     }
@@ -743,18 +571,18 @@ void BenchGemmEx(Arguments& arg, std::promise<std::pair<double,double>> promise)
 
     if(storeInitData)
     {
-        storeInitToBin<Ti,To>(transA, transB, M, N, K, hA, lda, a_file, hB, ldb, b_file, hC, ldc, c_file, 1);
+        storeInitToBin<Ti,To>(hA, a_file, hB, b_file, hC, c_file);
     }
 
     // copy data from CPU to device
 
-    CHECK_HIP_ERROR(hipMemcpy(dA, hA, sizeof(Ti) * size_A, hipMemcpyHostToDevice));
-    CHECK_HIP_ERROR(hipMemcpy(dB, hB, sizeof(Ti) * size_B, hipMemcpyHostToDevice));
-    CHECK_HIP_ERROR(hipMemcpy(dC, hC, sizeof(To) * size_C, hipMemcpyHostToDevice));
-    CHECK_HIP_ERROR(hipMemcpy(dD, hD_1, sizeof(To) * size_D, hipMemcpyHostToDevice));
+    // copy data from CPU to device
+    CHECK_HIP_ERROR(dA.broadcast_one_matrix_from(hA));
+    CHECK_HIP_ERROR(dB.broadcast_one_matrix_from(hB));
+    CHECK_HIP_ERROR(dC.broadcast_one_matrix_from(hC));
 
 #ifdef VALIDATE
-    if(arg.norm_check)
+    if(arg.norm_check || arg.unit_check)
     {
         // ROCBLAS rocblas_pointer_mode_host
         CHECK_ROCBLAS_ERROR(rocblas_set_pointer_mode(handle, rocblas_pointer_mode_host));
@@ -766,38 +594,32 @@ void BenchGemmEx(Arguments& arg, std::promise<std::pair<double,double>> promise)
                                             N,
                                             K,
                                             &h_alpha_Tc,
-                                            dA,
+                                            dA[0],
                                             arg.a_type,
                                             lda,
-                                            dB,
+                                            dB[0],
                                             arg.b_type,
                                             ldb,
                                             &h_beta_Tc,
-                                            dC,
+                                            dC[0],
                                             arg.c_type,
                                             ldc,
-                                            c_equals_d ? dC : dD,
-                                            c_equals_d ? arg.c_type : arg.d_type,
-                                            c_equals_d ? ldc : ldd,
+                                            dD[0],
+                                            d_type,
+                                            ldd,
                                             arg.compute_type,
                                             algo,
                                             solution_index,
                                             flags));                     
 
-        if(c_equals_d)
-            CHECK_HIP_ERROR(hipMemcpy(hC_1, dC, sizeof(To) * size_C, hipMemcpyDeviceToHost));
-        else
-            CHECK_HIP_ERROR(hipMemcpy(hD_1, dD, sizeof(To) * size_D, hipMemcpyDeviceToHost));
+        CHECK_HIP_ERROR(hD.transfer_one_matrix_from(dD));
 
         // ROCBLAS rocblas_pointer_mode_device
         CHECK_ROCBLAS_ERROR(rocblas_set_pointer_mode(handle, rocblas_pointer_mode_device));
         CHECK_HIP_ERROR(hipMemcpy(d_alpha_Tc, &h_alpha_Tc, sizeof(Tc), hipMemcpyHostToDevice));
         CHECK_HIP_ERROR(hipMemcpy(d_beta_Tc, &h_beta_Tc, sizeof(Tc), hipMemcpyHostToDevice));
 
-        if(c_equals_d)
-            CHECK_HIP_ERROR(hipMemcpy(dC, hC, sizeof(To) * size_C, hipMemcpyHostToDevice));
-        else
-            CHECK_HIP_ERROR(hipMemcpy(dD, hD_gold, sizeof(To) * size_D, hipMemcpyHostToDevice));
+        CHECK_HIP_ERROR(dC.broadcast_one_matrix_from(hC));
 
         CHECK_ROCBLAS_ERROR(rocblas_gemm_ex(handle,
                                             transA,
@@ -806,19 +628,19 @@ void BenchGemmEx(Arguments& arg, std::promise<std::pair<double,double>> promise)
                                             N,
                                             K,
                                             d_alpha_Tc,
-                                            dA,
+                                            dA[0],
                                             arg.a_type,
                                             lda,
-                                            dB,
+                                            dB[0],
                                             arg.b_type,
                                             ldb,
                                             d_beta_Tc,
-                                            dC,
+                                            dC[0],
                                             arg.c_type,
                                             ldc,
-                                            c_equals_d ? dC : dD,
-                                            c_equals_d ? arg.c_type : arg.d_type,
-                                            c_equals_d ? ldc : ldd,
+                                            dD[0],
+                                            d_type,
+                                            ldd,
                                             arg.compute_type,
                                             algo,
                                             solution_index,
@@ -833,19 +655,10 @@ void BenchGemmEx(Arguments& arg, std::promise<std::pair<double,double>> promise)
         {
             // CPU BLAS
             // copy C matrix into D matrix
-            if(!c_equals_d)
-            {
-                for(int i2 = 0; i2 < N; i2++)
-                {
-                    for(int i1 = 0; i1 < M; i1++)
-                    {
-                        hD_gold[i1 + i2 * ldd] = hC[i1 + i2 * ldc];
-                    }
-                }
-            }
+            copy_matrix_with_different_leading_dimensions(hC, hD_gold);
             cpu_time_used = get_time_us();
             blis_gemm<Ti,To,Tc>(
-                transA, transB, M, N, K, h_alpha_Tc, hA, lda, hB, ldb, h_beta_Tc, c_equals_d ? hC_gold : hD_gold, c_equals_d ? ldc : ldd);
+                transA, transB, M, N, K, h_alpha_Tc, hA, lda, hB, ldb, h_beta_Tc, hD_gold, ldd);
             //if C does not equal D check if C changed
 
             cpu_time_used = get_time_us() - cpu_time_used;
@@ -858,62 +671,39 @@ void BenchGemmEx(Arguments& arg, std::promise<std::pair<double,double>> promise)
         }
 
         //releasing already used host memory
-        hA=host_vector<Ti>();
-        hB=host_vector<Ti>();
-        hC=host_vector<To>();
+        hA=host_matrix<Ti>();
+        hB=host_matrix<Ti>();
+        if(!reinit_c)
+            hC=host_matrix<To>();
 
         for(int i=0; i<2; i++)
         {
             if(arg.unit_check)
             {
-                if(std::is_same<Tc, rocblas_half> {} && K > 10000)
+                if(std::is_same_v<Tc, rocblas_half> && K > 10000)
                 {
                     // For large K, rocblas_half tends to diverge proportional to K
                     // Tolerance is slightly greater than 1 / 1024.0
                     const double tol = K * sum_error_tolerance<Tc>;
-                    if(!c_equals_d)
-                    {
-                        near_check_general<To>(M, N, ldd, hD_gold, hD_1, tol);
-                    }
-                    else
-                    {
-                        unit_check_general<To>(M, N, ldc, hC_gold, hC_1);
-                    }
+                    near_check_general<To>(M, N, ldd, (To*)hD_gold, (To*)hD, tol);
                 }
                 else
                 {
-                    if(!c_equals_d)
-                    {
-                        unit_check_general<To>(M, N, ldd, hD_gold, hD_1);
-                    }
-                    else
-                    {
-                        unit_check_general<To>(M, N, ldc, hC_gold, hC_1);
-                    }
+                    unit_check_general<To>(M, N, ldd, (To*)hD_gold, (To*)hD);
                 }
             }
 
             if(arg.norm_check)
             {
                 auto err = 0.0;
-                if(!c_equals_d)
-                {
-                    err = fabs(norm_check_general<To>('F', M, N, ldd, hD_gold, hD_1));
-                }
-                else
-                {
-                    err = fabs(norm_check_general<To>('F', M, N, ldc, hC_gold, hC_1));
-                }
+                err = fabs(norm_check_general<To>('F', M, N, ldd, (To*)hD_gold, (To*)hD));
 
                 rocblas_error = err > rocblas_error ? err : rocblas_error;
             }
 
             if(i==0)
             {
-                if(c_equals_d)
-                    CHECK_HIP_ERROR(hipMemcpy(hC_1, dC, sizeof(To) * size_C, hipMemcpyDeviceToHost));
-                else
-                    CHECK_HIP_ERROR(hipMemcpy(hD_1, dD, sizeof(To) * size_D, hipMemcpyDeviceToHost));
+                CHECK_HIP_ERROR(hD.transfer_one_matrix_from(dD));
             }
         }
     }
@@ -924,12 +714,12 @@ void BenchGemmEx(Arguments& arg, std::promise<std::pair<double,double>> promise)
     int numEvents = (tensile_timing ? number_hot_calls + 1: 1);
 
     hipEvent_t flush, start[numEvents], stop[numEvents];
-    hipEventCreateWithFlags(&flush, hipEventReleaseToSystem);
+    CHECK_HIP_ERROR(hipEventCreateWithFlags(&flush, hipEventReleaseToSystem));
 
     for(int i =0; i < numEvents;i++)
     {
-        hipEventCreate(&start[i]);
-        hipEventCreate(&stop[i]);
+        CHECK_HIP_ERROR(hipEventCreate(&start[i]));
+        CHECK_HIP_ERROR(hipEventCreate(&stop[i]));
     }
 
     float kernel_time = 0.0f;
@@ -937,9 +727,6 @@ void BenchGemmEx(Arguments& arg, std::promise<std::pair<double,double>> promise)
     host_time        = 0.0;
     float kernel_time_iter = 0.0f;
     double host_time_iter = 0.0f;
-    To* output_pointer = c_equals_d ? dC : dD;
-    rocblas_datatype output_type = c_equals_d ? arg.c_type : arg.d_type;
-    rocblas_int ld_output = c_equals_d ? ldc : ldd;
 
     CHECK_ROCBLAS_ERROR(rocblas_set_pointer_mode(handle, rocblas_pointer_mode_host));
 
@@ -952,19 +739,19 @@ void BenchGemmEx(Arguments& arg, std::promise<std::pair<double,double>> promise)
                                             N,
                                             K,
                                             &h_alpha_Tc,
-                                            dA,
+                                            dA[0],
                                             arg.a_type,
                                             lda,
-                                            dB,
+                                            dB[0],
                                             arg.b_type,
                                             ldb,
                                             &h_beta_Tc,
-                                            dC,
+                                            dC[0],
                                             arg.c_type,
                                             ldc,
-                                            output_pointer,
-                                            output_type,
-                                            ld_output,
+                                            dD[0],
+                                            d_type,
+                                            ldd,
                                             arg.compute_type,
                                             algo,
                                             solution_index,
@@ -976,12 +763,12 @@ void BenchGemmEx(Arguments& arg, std::promise<std::pair<double,double>> promise)
         for(int i = 0; i < number_hot_calls; i++)
         {
             if(reinit_c && ((arg.norm_check && i == 0) || i > 0))
-                CHECK_HIP_ERROR(hipMemcpy(dC, hC_orig, sizeof(To) * size_C, hipMemcpyHostToDevice));
+                CHECK_HIP_ERROR(dC.broadcast_one_matrix_from(hC));
             if(arg.flush_gpu_cache)
-                hipEventRecord(flush, NULL);
+                CHECK_HIP_ERROR(hipEventRecord(flush, NULL));
 
             host_time_iter = get_time_us();
-            hipEventRecord(start[numEvents-1], NULL);
+            CHECK_HIP_ERROR(hipEventRecord(start[numEvents-1], NULL));
 
             rocblas_gemm_ex(handle,
                             transA,
@@ -990,28 +777,28 @@ void BenchGemmEx(Arguments& arg, std::promise<std::pair<double,double>> promise)
                             N,
                             K,
                             &h_alpha_Tc,
-                            dA,
+                            dA[0],
                             arg.a_type,
                             lda,
-                            dB,
+                            dB[0],
                             arg.b_type,
                             ldb,
                             &h_beta_Tc,
-                            dC,
+                            dC[0],
                             arg.c_type,
                             ldc,
-                            output_pointer,
-                            output_type,
-                            ld_output,
+                            dD[0],
+                            d_type,
+                            ldd,
                             arg.compute_type,
                             algo,
                             solution_index,
                             flags);
 
-            hipEventRecord(stop[numEvents-1], NULL);
-            hipEventSynchronize(stop[numEvents-1]);
+            CHECK_HIP_ERROR(hipEventRecord(stop[numEvents-1], NULL));
+            CHECK_HIP_ERROR(hipEventSynchronize(stop[numEvents-1]));
             host_time += get_time_us() - host_time_iter;
-            hipEventElapsedTime(&kernel_time_iter, start[numEvents-1], stop[numEvents-1]);
+            CHECK_HIP_ERROR(hipEventElapsedTime(&kernel_time_iter, start[numEvents-1], stop[numEvents-1]));
             kernel_time+=kernel_time_iter;
         }
     }
@@ -1024,7 +811,7 @@ void BenchGemmEx(Arguments& arg, std::promise<std::pair<double,double>> promise)
             perfBarrier.wait(deviceId);
         }
         times.first = get_time_us(); // in microseconds
-        hipEventRecord(start[numEvents-1], NULL);
+        CHECK_HIP_ERROR(hipEventRecord(start[numEvents-1], NULL));
         for(int i = 0; i < number_hot_calls; i++)
         {
             ROCBLAS_INVOKE_START_STOP_EVENTS(handle, tensile_timing ? start[i]: nullptr, tensile_timing ? stop[i] : nullptr,
@@ -1035,27 +822,27 @@ void BenchGemmEx(Arguments& arg, std::promise<std::pair<double,double>> promise)
                             N,
                             K,
                             &h_alpha_Tc,
-                            dA,
+                            dA[0],
                             arg.a_type,
                             lda,
-                            dB,
+                            dB[0],
                             arg.b_type,
                             ldb,
                             &h_beta_Tc,
-                            dC,
+                            dC[0],
                             arg.c_type,
                             ldc,
-                            output_pointer,
-                            output_type,
-                            ld_output,
+                            dD[0],
+                            d_type,
+                            ldd,
                             arg.compute_type,
                             algo,
                             solution_index,
                             flags));
         }
 
-        hipEventRecord(stop[numEvents-1], NULL);
-        hipEventSynchronize(stop[numEvents-1]);
+        CHECK_HIP_ERROR(hipEventRecord(stop[numEvents-1], NULL));
+        CHECK_HIP_ERROR(hipEventSynchronize(stop[numEvents-1]));
 
         times.second = get_time_us();
         if(multi_device>1)
@@ -1063,17 +850,17 @@ void BenchGemmEx(Arguments& arg, std::promise<std::pair<double,double>> promise)
         host_time = times.second-times.first;
         for(int i=0; i<numEvents-1;i++)
         {
-            hipEventElapsedTime(&kernel_time_iter, start[i], stop[i]);
+            CHECK_HIP_ERROR(hipEventElapsedTime(&kernel_time_iter, start[i], stop[i]));
             tensile_time+=kernel_time_iter;
         }
 
-        hipEventElapsedTime(&kernel_time, start[numEvents-1], stop[numEvents-1]);
+        CHECK_HIP_ERROR(hipEventElapsedTime(&kernel_time, start[numEvents-1], stop[numEvents-1]));
     }
 
     if(storeOutputData)
     {
-        CHECK_HIP_ERROR(hipMemcpy(c_equals_d ? hC_1 : hD_1, output_pointer, sizeof(To) * ld_output * N, hipMemcpyDeviceToHost));
-        storeOutputToBin<To>(N, c_equals_d ? hC_1 : hD_1, ld_output, o_file, 1);
+        CHECK_HIP_ERROR(hD.transfer_one_matrix_from(dD));
+        storeOutputToBin<To>(hD, o_file);
     }
 
     rocblas_gflops = gemm_gflop_count<Ti>(M, N, K) * number_hot_calls / (tensile_timing ? tensile_time : kernel_time) * 1e3;
@@ -1154,7 +941,7 @@ void BenchGemm(Arguments& arg, std::promise<std::pair<double,double>> promise)
     rocblas_local_handle handle;
     int deviceId;
     if(multi_device>1)
-        hipGetDevice(&deviceId);
+        CHECK_HIP_ERROR(hipGetDevice(&deviceId));
 
     rocblas_int A_row = transA == rocblas_operation_none ? M : K;
     rocblas_int A_col = transA == rocblas_operation_none ? K : M;
@@ -1168,102 +955,49 @@ void BenchGemm(Arguments& arg, std::promise<std::pair<double,double>> promise)
         exit(1);
     }
 
-    const auto size_A = size_t(lda) * size_t(A_col);
-    const auto size_B = size_t(ldb) * size_t(B_col);
-    const auto size_C = size_t(ldc) * size_t(N);
-
     // allocate memory on device
-    device_vector<T> dA(size_A);
-    device_vector<T> dB(size_B);
-    device_vector<T> dC(size_C);
-    device_vector<T> d_alpha(1);
-    device_vector<T> d_beta(1);
-    if(!dA || !dB || !dC || !d_alpha || !d_beta)
-    {
-        CHECK_HIP_ERROR(hipErrorOutOfMemory);
-        return;
-    }
+    device_matrix<T> dA(A_row, A_col, lda);
+    device_matrix<T> dB(B_row, B_col, ldb);
+    device_matrix<T> dC(M, N, ldc);
+    device_vector<T> d_alpha(1, 1);
+    device_vector<T> d_beta(1, 1);
+
+    // Check device memory allocation
+    CHECK_HIP_ERROR(dA.memcheck());
+    CHECK_HIP_ERROR(dB.memcheck());
+    CHECK_HIP_ERROR(dC.memcheck());
+    CHECK_HIP_ERROR(d_alpha.memcheck());
+    CHECK_HIP_ERROR(d_beta.memcheck());
 
     bool vChecks = (arg.unit_check || arg.norm_check);
     bool transferOutput = (vChecks || storeOutputData);
 
     // Naming: dX is in GPU (device) memory. hK is in CPU (host) memory
-    static host_vector<T> hA(size_A);
-    static host_vector<T> hB(size_B);
-    static host_vector<T> hC(size_C);
-    host_vector<T> hC_1(transferOutput ? size_C : 0);
-    static host_vector<T> hC_gold(vChecks ? size_C : 0);
-    static host_vector<T> hC_orig(arg.reinit_c ? size_C : 0);
+    static host_matrix<T> hA(A_row, A_col, lda);
+    static host_matrix<T> hB(B_row, B_col, ldb);
+    host_matrix<T> hC(M, N, ldc);
+    static host_matrix<T> hC_gold = (vChecks) ? host_matrix<T>(M, N, ldc)
+                            : host_matrix<T>(0, 0, 0);
+    static host_matrix<T> hC_orig = (arg.reinit_c) ? host_matrix<T>(M, N, ldc)
+                            : host_matrix<T>(0, 0, 0);
+
     // Initial Data on CPU
     if((multi_device>1 && deviceId==0) || multi_device == 1)
     {
-        if(arg.initialization == rocblas_initialization_random_int)
+
+        if(arg.initialization == rocblas_initialization_file)
+            loadFromBin<T>(hA, a_file, hB, b_file, hC, c_file);
+        else
         {
-            //  Old
-            rocblas_seedrand();
-            rocblas_init<T>(hA, A_row, A_col, lda);
-            rocblas_init_alternating_sign<T>(hB, B_row, B_col, ldb);
-            if(rocblas_isnan(arg.beta) || rocblas_isnan(arg.betai))
-                rocblas_init_nan<T>(hC, M, N, ldc);
-            else
-                rocblas_init<T>(hC, M, N, ldc);
-        }
-        else if(arg.initialization == rocblas_initialization_random_narrow)
-        {
-            init_narrow_range_random_gemm<T>(
-                transA, transB, M, N, K, hA, lda, size_A, hB, ldb, size_B, hC, ldc, size_C);
-        }
-        else if(arg.initialization == rocblas_initialization_random_broad)
-        {
-            init_broad_range_random_gemm<T>(
-                transA, transB, M, N, K, hA, lda, size_A, hB, ldb, size_B, hC, ldc, size_C);
-        }
-        else if(arg.initialization == rocblas_initialization_random_full)
-        {
-            init_full_range_random_gemm<T>(
-                transA, transB, M, N, K, hA, lda, size_A, hB, ldb, size_B, hC, ldc, size_C);
-        }
-        else if(arg.initialization == rocblas_initialization_const)
-        {
-            init_constant_gemm<T>(transA,
-                                transB,
-                                M,
-                                N,
-                                K,
-                                hA,
-                                lda,
-                                size_A,
-                                hB,
-                                ldb,
-                                size_B,
-                                hC,
-                                ldc,
-                                size_C,
-                                T(arg.initVal));
-        }
-        else if(arg.initialization == rocblas_initialization_trig_float)
-        {
-            rocblas_init_sin<T>(hA, A_row, A_col, lda);
-            rocblas_init_cos<T>(hB, B_row, B_col, ldb);
-            if(rocblas_isnan(arg.beta) || rocblas_isnan(arg.betai))
-                rocblas_init_nan<T>(hC, M, N, ldc);
-            else
-                rocblas_init_sin<T>(hC, M, N, ldc);
-        }
-        else if(arg.initialization == rocblas_initialization_hpl)
-        {
-            rocblas_seedrand();
-            rocblas_init_hpl<T>(hA, A_row, A_col, lda);
-            rocblas_init_hpl<T>(hB, B_row, B_col, ldb);
-            if(rocblas_isnan(arg.beta) || rocblas_isnan(arg.betai))
-                rocblas_init_nan<T>(hC, M, N, ldc);
-            else
-                rocblas_init_hpl<T>(hC, M, N, ldc);
-        }
-        else if(arg.initialization == rocblas_initialization_file)
-        {
-            loadFromBin(
-                transA, transB, M, N, K, hA, lda, a_file, hB, ldb, b_file, hC, ldc, c_file, 1);
+            // Initialize data on host memory
+            rocblas_init_matrix(
+                hA, arg, rocblas_client_alpha_sets_nan, rocblas_client_general_matrix, true);
+            rocblas_init_matrix<T, true>(
+                hB, arg, rocblas_client_alpha_sets_nan, rocblas_client_general_matrix, false, true);
+            rocblas_init_matrix<T, true>(hC, arg, rocblas_client_beta_sets_nan, rocblas_client_general_matrix);
+
+            if(arg.initialization == rocblas_initialization_random_broad)
+                normalizeInputs<T>(hA,hB);
         }
 
         if(reinit_c)
@@ -1280,27 +1014,27 @@ void BenchGemm(Arguments& arg, std::promise<std::pair<double,double>> promise)
 
     if(storeInitData)
     {
-        storeInitToBin<T,T>(transA, transB, M, N, K, hA, lda, a_file, hB, ldb, b_file, hC, ldc, c_file, 1);
+        storeInitToBin<T,T>(hA, a_file, hB, b_file, hC, c_file);
     }
 
     // copy data from CPU to device
-    CHECK_HIP_ERROR(hipMemcpy(dA, hA, sizeof(T) * size_A, hipMemcpyHostToDevice));
-    CHECK_HIP_ERROR(hipMemcpy(dB, hB, sizeof(T) * size_B, hipMemcpyHostToDevice));
-    CHECK_HIP_ERROR(hipMemcpy(dC, hC, sizeof(T) * size_C, hipMemcpyHostToDevice));
+    CHECK_HIP_ERROR(dA.transfer_from(hA));
+    CHECK_HIP_ERROR(dB.transfer_from(hB));
+    CHECK_HIP_ERROR(dC.transfer_from(hC));
 
 #ifdef VALIDATE
-    if(arg.norm_check)
+    if(arg.norm_check || arg.unit_check)
     {
         // ROCBLAS rocblas_pointer_mode_host
         CHECK_ROCBLAS_ERROR(rocblas_set_pointer_mode(handle, rocblas_pointer_mode_host));
         CHECK_ROCBLAS_ERROR(rocblas_gemm<T>(
             handle, transA, transB, M, N, K, &h_alpha, dA, lda, dB, ldb, &h_beta, dC, ldc));
 
-        CHECK_HIP_ERROR(hipMemcpy(hC_1, dC, sizeof(T) * size_C, hipMemcpyDeviceToHost));
+        CHECK_HIP_ERROR(hC.transfer_from(dC));
 
         // ROCBLAS rocblas_pointer_mode_device
         CHECK_ROCBLAS_ERROR(rocblas_set_pointer_mode(handle, rocblas_pointer_mode_device));
-        CHECK_HIP_ERROR(hipMemcpy(dC, hC, sizeof(T) * size_C, hipMemcpyHostToDevice));
+        CHECK_HIP_ERROR(dC.transfer_from(hC_gold));
         CHECK_HIP_ERROR(hipMemcpy(d_alpha, &h_alpha, sizeof(T), hipMemcpyHostToDevice));
         CHECK_HIP_ERROR(hipMemcpy(d_beta, &h_beta, sizeof(T), hipMemcpyHostToDevice));
         CHECK_ROCBLAS_ERROR(rocblas_gemm<T>(
@@ -1339,45 +1073,46 @@ void BenchGemm(Arguments& arg, std::promise<std::pair<double,double>> promise)
         }
 
         //releasing already used host memory
-        hA=host_vector<T>();
-        hB=host_vector<T>();
-        hC=host_vector<T>();
+        hA=host_matrix<T>();
+        hB=host_matrix<T>();
 
         for(int i = 0; i<2; i++)
         {
             if(arg.unit_check)
             {
-                if(std::is_same<T, rocblas_half>{} && K > 10000)
+                if(std::is_same_v<T, rocblas_half> && K > 10000)
                 {
                     // For large K, rocblas_half tends to diverge proportional to K
                     // Tolerance is slightly greater than 1 / 1024.0
                     const double tol = K * sum_error_tolerance<T>;
-                    near_check_general<T>(M, N, ldc, hC_gold, hC_1, tol);
+                    near_check_general<T>(M, N, ldc, (T*)hC_gold, (T*)hC, tol);
                 }
                 else
                 {
-                    unit_check_general<T>(M, N, ldc, hC_gold, hC_1);
+                    unit_check_general<T>(M, N, ldc, (T*)hC_gold, (T*)hC);
                 }
             }
 
             if(arg.norm_check)
             {
-                auto err1     = fabs(norm_check_general<T>('F', M, N, ldc, hC_gold, hC_1));
+                auto err1     = fabs(norm_check_general<T>('F', M, N, ldc, (T*)hC_gold, (T*)hC));
                 rocblas_error = err1 > rocblas_error ? err1 : rocblas_error;
             }
 
             if(i==0)
-                CHECK_HIP_ERROR(hipMemcpy(hC_1, dC, sizeof(T) * size_C, hipMemcpyDeviceToHost));
+                CHECK_HIP_ERROR(hC.transfer_from(dC));
         }
+
+        hC=host_matrix<T>();
     }
 #endif
 
     int number_cold_calls = 2;
     int number_hot_calls  = arg.iters;
     hipEvent_t start, stop, flush;
-    hipEventCreateWithFlags(&flush, hipEventReleaseToSystem);
-    hipEventCreate(&start);
-    hipEventCreate(&stop);
+    CHECK_HIP_ERROR(hipEventCreateWithFlags(&flush, hipEventReleaseToSystem));
+    CHECK_HIP_ERROR(hipEventCreate(&start));
+    CHECK_HIP_ERROR(hipEventCreate(&stop));
     float kernel_time = 0.0f;
     host_time        = 0.0;
     float kernel_time_iter = 0.0f;
@@ -1397,20 +1132,20 @@ void BenchGemm(Arguments& arg, std::promise<std::pair<double,double>> promise)
         for(int i = 0; i < number_hot_calls; i++)
         {
             if(reinit_c && ((arg.norm_check && i == 0) || i > 0))
-                CHECK_HIP_ERROR(hipMemcpy(dC, hC_orig, sizeof(T) * size_C, hipMemcpyHostToDevice));
+                CHECK_HIP_ERROR(dC.transfer_from(hC_orig));
             if(arg.flush_gpu_cache)
-                hipEventRecord(flush, NULL);
+                CHECK_HIP_ERROR(hipEventRecord(flush, NULL));
 
             host_time_iter = get_time_us();
-            hipEventRecord(start, NULL);
+            CHECK_HIP_ERROR(hipEventRecord(start, NULL));
 
             rocblas_gemm<T>(
             handle, transA, transB, M, N, K, &h_alpha, dA, lda, dB, ldb, &h_beta, dC, ldc);
 
-            hipEventRecord(stop, NULL);
-            hipEventSynchronize(stop);
+            CHECK_HIP_ERROR(hipEventRecord(stop, NULL));
+            CHECK_HIP_ERROR(hipEventSynchronize(stop));
             host_time += get_time_us() - host_time_iter;
-            hipEventElapsedTime(&kernel_time_iter, start, stop);
+            CHECK_HIP_ERROR(hipEventElapsedTime(&kernel_time_iter, start, stop));
             kernel_time+=kernel_time_iter;
         }
     }
@@ -1423,26 +1158,26 @@ void BenchGemm(Arguments& arg, std::promise<std::pair<double,double>> promise)
             perfBarrier.wait(deviceId);
         }
         times.first = get_time_us(); // in microseconds
-        hipEventRecord(start, NULL);
+        CHECK_HIP_ERROR(hipEventRecord(start, NULL));
         for(int i = 0; i < number_hot_calls; i++)
         {
             rocblas_gemm<T>(
             handle, transA, transB, M, N, K, &h_alpha, dA, lda, dB, ldb, &h_beta, dC, ldc);
         }
 
-        hipEventRecord(stop, NULL);
-        hipEventSynchronize(stop);
+        CHECK_HIP_ERROR(hipEventRecord(stop, NULL));
+        CHECK_HIP_ERROR(hipEventSynchronize(stop));
         times.second = get_time_us();
         if(multi_device>1)
             promise.set_value(times);
-        hipEventElapsedTime(&kernel_time, start, stop);
+        CHECK_HIP_ERROR(hipEventElapsedTime(&kernel_time, start, stop));
         host_time = times.second-times.first;
     }
 
     if(storeOutputData)
     {
-        CHECK_HIP_ERROR(hipMemcpy(hC_1, dC, sizeof(T) * size_C, hipMemcpyDeviceToHost));
-        storeOutputToBin<T>(N, hC_1, ldc, o_file, 1);
+        CHECK_HIP_ERROR(hC.transfer_from(dC));
+        storeOutputToBin<T>(hC, o_file);
     }
 
     rocblas_gflops = gemm_gflop_count<T>(M, N, K) * number_hot_calls / kernel_time * 1e3;
@@ -1643,6 +1378,7 @@ int main(int argc, char* argv[])
             rocblas_cout << "Precision not implemented, exiting";
             return rocblas_status_not_implemented;
         }
+        overall_gflops *= arg.batch_count;
         overall_gflops /= overall_time / 1e6 / multi_device; 
 
         rocblas_cout<<"Overall performance using host timing"<<std::endl

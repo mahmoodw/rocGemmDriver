@@ -364,7 +364,7 @@ double norm_check_general(char           norm_type,
                           rocblas_int    lda,
                           rocblas_stride stride_a,
                           rocblas_int    batch_count,
-                          VEC<T_hpa>    hCPU,
+                          VEC<T_hpa>&    hCPU,
                           T*             hGPU)
 {
     // norm type can be O', 'I', 'F', 'o', 'i', 'f' for one, infinity or Frobenius norm

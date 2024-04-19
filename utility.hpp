@@ -407,8 +407,8 @@ class internal_ostream
         static_assert(std::is_standard_layout<file_id_t>{} && std::is_standard_layout<struct stat>{}
                         && offsetof(file_id_t, st_dev) == 0 && offsetof(struct stat, st_dev) == 0
                         && offsetof(file_id_t, st_ino) == offsetof(struct stat, st_ino)
-                        && std::is_same<decltype(file_id_t::st_dev), decltype(stat::st_dev)>{}
-                        && std::is_same<decltype(file_id_t::st_ino), decltype(stat::st_ino)>{},
+                        && std::is_same_v<decltype(file_id_t::st_dev), decltype(stat::st_dev)>
+                        && std::is_same_v<decltype(file_id_t::st_ino), decltype(stat::st_ino)>,
                     "struct stat and file_id_t are not layout-compatible");
 
         // Get the device ID and inode, to detect common files
@@ -797,10 +797,31 @@ public:
     static std::ostream& yaml_off(std::ostream& os);
 };
 
+#define CHECK_HIP_ERROR(ERROR)                    \
+    do                                            \
+    {                                             \
+        auto error = ERROR;                       \
+        if(error != hipSuccess)                   \
+        {                                         \
+            fprintf(stderr,                       \
+                    "error: '%s'(%d) at %s:%d\n", \
+                    hipGetErrorString(error),     \
+                    error,                        \
+                    __FILE__,                     \
+                    __LINE__);                    \
+            exit(EXIT_FAILURE);                   \
+        }                                         \
+    } while(0)
+
+#define EXPECT_ROCBLAS_STATUS rocblas_expect_status
+
+#define CHECK_ROCBLAS_ERROR2(STATUS) EXPECT_ROCBLAS_STATUS(STATUS, rocblas_status_success)
+#define CHECK_ROCBLAS_ERROR(STATUS) CHECK_ROCBLAS_ERROR2(STATUS)
+
 /*! \brief  CPU Timer(in microsecond): synchronize with the default device and return wall time */
 double get_time_us(void)
 {
-    hipDeviceSynchronize();
+    CHECK_HIP_ERROR(hipDeviceSynchronize());
     struct timeval tv;
     gettimeofday(&tv, NULL);
     return (tv.tv_sec * 1000 * 1000) + tv.tv_usec;
@@ -912,27 +933,6 @@ inline void rocblas_expect_status(rocblas_status status, rocblas_status expect)
             exit(EXIT_FAILURE);
     }
 }
-
-#define CHECK_HIP_ERROR(ERROR)                    \
-    do                                            \
-    {                                             \
-        auto error = ERROR;                       \
-        if(error != hipSuccess)                   \
-        {                                         \
-            fprintf(stderr,                       \
-                    "error: '%s'(%d) at %s:%d\n", \
-                    hipGetErrorString(error),     \
-                    error,                        \
-                    __FILE__,                     \
-                    __LINE__);                    \
-            exit(EXIT_FAILURE);                   \
-        }                                         \
-    } while(0)
-
-#define EXPECT_ROCBLAS_STATUS rocblas_expect_status
-
-#define CHECK_ROCBLAS_ERROR2(STATUS) EXPECT_ROCBLAS_STATUS(STATUS, rocblas_status_success)
-#define CHECK_ROCBLAS_ERROR(STATUS) CHECK_ROCBLAS_ERROR2(STATUS)
 
 // gemm
 template <typename T>
@@ -1208,63 +1208,83 @@ inline rocblas_bfloat16 random_hpl_generator()
     return rocblas_bfloat16(std::uniform_real_distribution<double>(-0.5, 0.5)(rocblas_rng));
 }
 
+#define MEM_MAX_GUARD_PAD 8192
+
 /* ============================================================================================ */
 /*! \brief  base-class to allocate/deallocate device memory */
-template <typename T, size_t PAD, typename U>
+template <typename T>
 class d_vector
 {
 private:
-    size_t size, bytes;
+    size_t m_size;
+    size_t m_pad, m_guard_len;
+    size_t m_bytes;
+
+    static bool m_init_guard;
 
 public:
     inline size_t nmemb() const noexcept
     {
-        return size;
+        return m_size;
     }
 
+public:
+    bool use_HMM = false;
+
+public:
+    static T m_guard[MEM_MAX_GUARD_PAD];
+
 #ifdef GOOGLE_TEST
-    U guard[PAD];
-    d_vector(size_t s)
-        : size(s)
-        , bytes((s + PAD * 2) * sizeof(T))
+    d_vector(size_t s, bool HMM = false)
+        : m_size(s)
+        , m_pad(std::min(g_DVEC_PAD, size_t(MEM_MAX_GUARD_PAD)))
+        , m_guard_len(m_pad * sizeof(T))
+        , m_bytes((s + m_pad * 2) * sizeof(T))
+        , use_HMM(HMM)
     {
-        // Initialize guard with random data
-        if(PAD > 0)
+        // Initialize m_guard with random data
+        if(!m_init_guard)
         {
-            rocblas_init_nan(guard, PAD);
+            rocblas_init_nan(m_guard, MEM_MAX_GUARD_PAD);
+            m_init_guard = true;
         }
     }
 #else
-    d_vector(size_t s)
-        : size(s)
-        , bytes(s ? s * sizeof(T) : sizeof(T))
+    d_vector(size_t s, bool HMM = false)
+        : m_size(s)
+        , m_pad(0) // save current pad length
+        , m_guard_len(0 * sizeof(T))
+        , m_bytes(s ? s * sizeof(T) : sizeof(T))
+        , use_HMM(HMM)
     {
     }
 #endif
 
     T* device_vector_setup()
     {
-        T* d;
-        if((hipMalloc)(&d, bytes) != hipSuccess)
+        T* d = nullptr;
+        if(use_HMM ? hipMallocManaged(&d, m_bytes) : (hipMalloc)(&d, m_bytes) != hipSuccess)
         {
-            static char* lc = setlocale(LC_NUMERIC, "");
-            fprintf(stderr, "Error allocating %'zu bytes (%zu GB)\n", bytes, bytes >> 30);
+            rocblas_cerr << "Warning: hip can't allocate " << m_bytes << " bytes ("
+                         << (m_bytes >> 30) << " GB)" << std::endl;
 
             d = nullptr;
         }
 #ifdef GOOGLE_TEST
         else
         {
-            if(PAD > 0)
+            if(m_guard_len > 0)
             {
-                // Copy guard to device memory before allocated memory
-                hipMemcpy(d, guard, sizeof(guard), hipMemcpyHostToDevice);
+                // Copy m_guard to device memory before allocated memory
+                if(hipMemcpy(d, m_guard, m_guard_len, hipMemcpyDefault) != hipSuccess)
+                    rocblas_cerr << "Error: hipMemcpy pre-guard copy failure." << std::endl;
 
                 // Point to allocated block
-                d += PAD;
+                d += m_pad;
 
-                // Copy guard to device memory after allocated memory
-                hipMemcpy(d + size, guard, sizeof(guard), hipMemcpyHostToDevice);
+                // Copy m_guard to device memory after allocated memory
+                if(hipMemcpy(d + m_size, m_guard, m_guard_len, hipMemcpyDefault) != hipSuccess)
+                    rocblas_cerr << "Error: hipMemcpy post-guard copy failure." << std::endl;
             }
         }
 #endif
@@ -1274,24 +1294,26 @@ public:
     void device_vector_check(T* d)
     {
 #ifdef GOOGLE_TEST
-        if(PAD > 0)
+        if(m_pad > 0)
         {
-            U host[PAD];
+            T host[m_pad];
 
             // Copy device memory after allocated memory to host
-            hipMemcpy(host, d + this->size, sizeof(guard), hipMemcpyDeviceToHost);
+            if(hipMemcpy(host, d + this->m_size, m_guard_len, hipMemcpyDefault) != hipSuccess)
+                rocblas_cerr << "Error: hipMemcpy post-guard copy failure." << std::endl;
 
             // Make sure no corruption has occurred
-            EXPECT_EQ(memcmp(host, guard, sizeof(guard)), 0);
+            EXPECT_EQ(memcmp(host, m_guard, m_guard_len), 0);
 
-            // Point to guard before allocated memory
-            d -= PAD;
+            // Point to m_guard before allocated memory
+            d -= m_pad;
 
             // Copy device memory after allocated memory to host
-            hipMemcpy(host, d, sizeof(guard), hipMemcpyDeviceToHost);
+            if(hipMemcpy(host, d, m_guard_len, hipMemcpyDefault) != hipSuccess)
+                rocblas_cerr << "Error: hipMemcpy pre-guard copy failure." << std::endl;
 
             // Make sure no corruption has occurred
-            EXPECT_EQ(memcmp(host, guard, sizeof(guard)), 0);
+            EXPECT_EQ(memcmp(host, m_guard, m_guard_len), 0);
         }
 #endif
     }
@@ -1300,35 +1322,25 @@ public:
     {
         if(d != nullptr)
         {
-#ifdef GOOGLE_TEST
-            if(PAD > 0)
-            {
-                U host[PAD];
+            device_vector_check(d);
 
-                // Copy device memory after allocated memory to host
-                hipMemcpy(host, d + this->size, sizeof(guard), hipMemcpyDeviceToHost);
+            if(m_pad > 0)
+                d -= m_pad; // restore to start of alloc
 
-                // Make sure no corruption has occurred
-                EXPECT_EQ(memcmp(host, guard, sizeof(guard)), 0);
-
-                // Point to guard before allocated memory
-                d -= PAD;
-
-                // Copy device memory after allocated memory to host
-                hipMemcpy(host, d, sizeof(guard), hipMemcpyDeviceToHost);
-
-                // Make sure no corruption has occurred
-                EXPECT_EQ(memcmp(host, guard, sizeof(guard)), 0);
-            }
-#endif
             // Free device memory
             CHECK_HIP_ERROR((hipFree)(d));
         }
     }
 };
 
+template <typename T>
+T d_vector<T>::m_guard[MEM_MAX_GUARD_PAD] = {};
+
+template <typename T>
+bool d_vector<T>::m_init_guard = false;
+
 //
-// Local declaration of the host vector.
+// Forward declaration of the host vector.
 //
 template <typename T>
 class host_vector;
@@ -1336,8 +1348,8 @@ class host_vector;
 //!
 //! @brief pseudo-vector subclass which uses device memory
 //!
-template <typename T, size_t PAD = 4096, typename U = T>
-class device_vector : private d_vector<T, PAD, U>
+template <typename T>
+class device_vector : public d_vector<T>
 {
 
 public:
@@ -1354,28 +1366,15 @@ public:
     //!
     //! @brief Constructor.
     //! @param n The length of the vector.
-    //! @param inc The increment.
-    //! @remark Must wrap constructor and destructor in functions to allow Google Test macros to work
+    //! @param inc Element index increment. If zero treated as one.
+    //! @param HMM HipManagedMemory Flag.
     //!
-    explicit device_vector(rocblas_int n, rocblas_int inc)
-        : d_vector<T, PAD, U>(n * std::abs(inc))
-        , m_n(n)
-        , m_inc(inc)
+    explicit device_vector(size_t n, int64_t inc = 1, bool HMM = false)
+        : d_vector<T>{calculate_nmemb(n, inc), HMM}
+        , m_n{n}
+        , m_inc{inc ? inc : 1}
+        , m_data{this->device_vector_setup()}
     {
-        this->m_data = this->device_vector_setup();
-    }
-
-    //!
-    //! @brief Constructor (kept for backward compatibility)
-    //! @param s the size.
-    //! @remark Must wrap constructor and destructor in functions to allow Google Test macros to work
-    //!
-    explicit device_vector(size_t s)
-        : d_vector<T, PAD, U>(s)
-        , m_n(s)
-        , m_inc(1)
-    {
-        this->m_data = this->device_vector_setup();
     }
 
     //!
@@ -1383,30 +1382,30 @@ public:
     //!
     ~device_vector()
     {
-        this->device_vector_teardown(this->m_data);
-        this->m_data = nullptr;
+        this->device_vector_teardown(m_data);
+        m_data = nullptr;
     }
 
     //!
     //! @brief Returns the length of the vector.
     //!
-    rocblas_int n() const
+    size_t n() const
     {
-        return this->m_n;
+        return m_n;
     }
 
     //!
     //! @brief Returns the increment of the vector.
     //!
-    rocblas_int inc() const
+    int64_t inc() const
     {
-        return this->m_inc;
+        return m_inc;
     }
 
     //!
     //! @brief Returns the batch count (always 1).
     //!
-    rocblas_int batch_count() const
+    int64_t batch_count() const
     {
         return 1;
     }
@@ -1424,7 +1423,7 @@ public:
     //!
     operator T*()
     {
-        return this->m_data;
+        return m_data;
     }
 
     //!
@@ -1432,15 +1431,7 @@ public:
     //!
     operator const T*() const
     {
-        return this->m_data;
-    }
-
-    //!
-    //! @brief Tell whether malloc failed.
-    //!
-    explicit operator bool() const
-    {
-        return nullptr != this->m_data;
+        return m_data;
     }
 
     //!
@@ -1450,40 +1441,328 @@ public:
     //!
     hipError_t transfer_from(const host_vector<T>& that)
     {
-        return hipMemcpy(
-            this->m_data, (const T*)that, this->nmemb() * sizeof(T), hipMemcpyHostToDevice);
+        return hipMemcpy(m_data,
+                         (const T*)that,
+                         this->nmemb() * sizeof(T),
+                         this->use_HMM ? hipMemcpyHostToHost : hipMemcpyHostToDevice);
     }
 
     hipError_t memcheck() const
     {
-        return ((bool)*this) ? hipSuccess : hipErrorOutOfMemory;
+        return !this->nmemb() || m_data ? hipSuccess : hipErrorOutOfMemory;
     }
 
 private:
-    size_t      m_size{};
-    rocblas_int m_n{};
-    rocblas_int m_inc{};
-    T*          m_data{};
+    size_t  m_n{};
+    int64_t m_inc{};
+    T*      m_data{};
+
+    static size_t calculate_nmemb(size_t n, int64_t inc)
+    {
+        // alllocate when n is zero
+        return 1 + ((n ? n : 1) - 1) * std::abs(inc ? inc : 1);
+    }
 };
 
-/* ============================================================================================ */
+// light weight memory tracking for threshold limit on total use
+static size_t                  mem_used{0};
+static std::map<void*, size_t> mem_allocated;
+static std::mutex              mem_mutex;
+
+inline void alloc_ptr_use(void* ptr, size_t size)
+{
+    std::lock_guard<std::mutex> lock(mem_mutex);
+    if(ptr)
+    {
+        mem_allocated[ptr] = size;
+        mem_used += size;
+    }
+}
+
+inline void free_ptr_use(void* ptr)
+{
+    std::lock_guard<std::mutex> lock(mem_mutex);
+    if(ptr && mem_allocated[ptr])
+    {
+        mem_used -= mem_allocated[ptr];
+        mem_allocated.erase(ptr);
+    }
+}
+
+//!
+//! @brief Host free memory w/o swap.  Returns kB or -1 if unknown.
+//!
+ptrdiff_t host_bytes_available()
+{
+#ifdef WIN32
+
+    MEMORYSTATUSEX status;
+    status.dwLength = sizeof(status);
+    GlobalMemoryStatusEx(&status);
+    return (ptrdiff_t)status.ullAvailPhys;
+
+#else
+
+    const int BUF_MAX = 1024;
+    char      buf[BUF_MAX];
+
+    ptrdiff_t n_bytes = -1; // unknown
+
+    FILE* fp = popen("cat /proc/meminfo", "r");
+    if(fp == NULL)
+    {
+        return n_bytes;
+    }
+
+    static const char* mem_token     = "MemFree";
+    static auto*       mem_free_type = getenv("ROCBLAS_CLIENT_ALLOC_AVAILABLE");
+    if(mem_free_type)
+    {
+        mem_token = "MemAvail"; // MemAvailable
+    }
+    int mem_token_len = strlen(mem_token);
+
+    while(fgets(buf, BUF_MAX, fp) != NULL)
+    {
+        // set env ROCBLAS_CLIENT_ALLOC_AVAILABLE to use MemAvailable if too many SKIPS occur
+        if(!strncmp(buf, mem_token, mem_token_len))
+        {
+            sscanf(buf, "%*s %td", &n_bytes); // kB assumed as 3rd column and ignored
+            n_bytes *= 1024;
+            break;
+        }
+    }
+
+    int status = pclose(fp);
+    if(status == -1)
+    {
+        return -1;
+    }
+    else
+    {
+        return n_bytes;
+    }
+
+#endif
+}
+
+//!
+//! @brief Return rough estimate of memory used via host_ helper APIs only.
+//!
+size_t host_bytes_allocated()
+{
+    std::lock_guard<std::mutex> lock(mem_mutex);
+    return mem_used;
+}
+
+inline bool host_mem_safe(size_t n_bytes)
+{
+#if defined(ROCBLAS_BENCH)
+    return true; // roll out to rocblas-bench when CI does perf testing
+#else
+    static auto* no_alloc_check = getenv("ROCBLAS_CLIENT_NO_ALLOC_CHECK");
+    if(no_alloc_check)
+    {
+        return true;
+    }
+
+    constexpr size_t threshold = 100 * 1024 * 1024; // 100 MB
+
+    static size_t client_ram_limit = 0;
+
+    static int once = [&] {
+        auto* alloc_limit = getenv("ROCBLAS_CLIENT_RAM_GB_LIMIT");
+        if(alloc_limit)
+        {
+            size_t mem_limit;
+            client_ram_limit = sscanf(alloc_limit, "%zu", &mem_limit) == 1 ? mem_limit : 0;
+            client_ram_limit <<= 30; // B to GB
+        }
+        return 0;
+    }();
+
+    if(n_bytes > threshold)
+    {
+        if(client_ram_limit)
+        {
+            if(host_bytes_allocated() + n_bytes > client_ram_limit)
+            {
+                rocblas_cerr << "Warning: skipped allocating " << n_bytes << " bytes ("
+                             << (n_bytes >> 30) << " GB) as total would be more than client limit ("
+                             << (client_ram_limit >> 30) << " GB)" << std::endl;
+
+                return false;
+            }
+        }
+
+        ptrdiff_t avail_bytes = host_bytes_available(); // negative if unknown
+        if(avail_bytes >= 0 && n_bytes > avail_bytes)
+        {
+            rocblas_cerr << "Warning: skipped allocating " << n_bytes << " bytes ("
+                         << (n_bytes >> 30) << " GB) as more than free memory ("
+                         << (avail_bytes >> 30) << " GB)" << std::endl;
+
+            // we don't try if it looks to push load into swap
+            return false;
+        }
+    }
+    return true;
+#endif
+}
+
+//!
+//! @brief Allocates memory which can be freed with free.  Returns nullptr if swap required.
+//!
+void* host_malloc(size_t size)
+{
+    if(host_mem_safe(size))
+    {
+        void* ptr = malloc(size);
+
+        static int value = -1;
+
+        static auto once = false;
+        if(!once)
+        {
+            auto* alloc_byte_str = getenv("ROCBLAS_CLIENT_ALLOC_FILL_HEX_BYTE");
+            if(alloc_byte_str)
+            {
+                value = strtol(alloc_byte_str, nullptr, 16); // hex
+            }
+            once = true;
+        }
+
+        if(value != -1 && ptr)
+            memset(ptr, value, size);
+
+        alloc_ptr_use(ptr, size);
+
+        return ptr;
+    }
+    else
+        return nullptr;
+}
+
+//!
+//! @brief Allocates memory which can be freed with free.  Throws exception if swap required.
+//!
+inline void* host_malloc_throw(size_t nmemb, size_t size)
+{
+    void* ptr = host_malloc(nmemb * size);
+    if(!ptr)
+    {
+        throw std::bad_alloc{};
+    }
+    return ptr;
+}
+
+//!
+//! @brief Allocates cleared memory which can be freed with free.  Returns nullptr if swap required.
+//!
+void* host_calloc(size_t nmemb, size_t size)
+{
+    if(host_mem_safe(nmemb * size))
+    {
+        void* ptr = calloc(nmemb, size);
+        alloc_ptr_use(ptr, size);
+        return ptr;
+    }
+    else
+        return nullptr;
+}
+
+//!
+//! @brief Allocates cleared memory which can be freed with free.  Throws exception if swap required.
+//!
+inline void* host_calloc_throw(size_t nmemb, size_t size)
+{
+    void* ptr = host_calloc(nmemb, size);
+    if(!ptr)
+    {
+        throw std::bad_alloc{};
+    }
+    return ptr;
+}
+
+//!
+//! @brief Release memory allocated with host_ prefixed allocators
+//!
+void host_free(void* ptr)
+{
+    free(ptr);
+    free_ptr_use(ptr);
+}
+
+
+//!
+//! @brief  Allocator which allocates with host_calloc
+//!
+template <class T>
+struct host_memory_allocator
+{
+    using value_type = T;
+
+    host_memory_allocator() = default;
+
+    template <class U>
+    host_memory_allocator(const host_memory_allocator<U>&)
+    {
+    }
+
+    T* allocate(std::size_t n)
+    {
+        return (T*)host_malloc_throw(n, sizeof(T));
+    }
+
+    void deallocate(T* ptr, std::size_t n)
+    {
+        host_free(ptr);
+    }
+};
+
+template <class T, class U>
+constexpr bool operator==(const host_memory_allocator<T>&, const host_memory_allocator<U>&)
+{
+    return true;
+}
+
+template <class T, class U>
+constexpr bool operator!=(const host_memory_allocator<T>&, const host_memory_allocator<U>&)
+{
+    return false;
+}
+
 //!
 //! @brief  Pseudo-vector subclass which uses host memory.
 //!
 template <typename T>
-struct host_vector : std::vector<T>
+struct host_vector : std::vector<T, host_memory_allocator<T>>
 {
     // Inherit constructors
-    using std::vector<T>::vector;
+    using std::vector<T, host_memory_allocator<T>>::vector;
 
     //!
     //! @brief Constructor.
+    //! @param  inc Element index increment. If zero treated as one
     //!
-    host_vector(rocblas_int n, rocblas_int inc)
-        : std::vector<T>(n * std::abs(inc))
+    host_vector(size_t n, int64_t inc = 1)
+        : std::vector<T, host_memory_allocator<T>>(calculate_nmemb(n, inc))
         , m_n(n)
-        , m_inc(inc)
+        , m_inc(inc ? inc : 1)
     {
+    }
+
+    //!
+    //! @brief Copy constructor from host_vector of other types convertible to T
+    //!
+    template <typename U, std::enable_if_t<std::is_convertible<U, T>{}, int> = 0>
+    host_vector(const host_vector<U>& x)
+        : std::vector<T, host_memory_allocator<T>>(x.size())
+        , m_n(x.size())
+        , m_inc(1)
+    {
+        for(size_t i = 0; i < m_n; ++i)
+            (*this)[i] = x[i];
     }
 
     //!
@@ -1509,30 +1788,37 @@ struct host_vector : std::vector<T>
     //!
     hipError_t transfer_from(const device_vector<T>& that)
     {
-        return hipMemcpy(
-            this->data(), (const T*)that, sizeof(T) * this->size(), hipMemcpyDeviceToHost);
+        hipError_t hip_err;
+
+        if(that.use_HMM && hipSuccess != (hip_err = hipDeviceSynchronize()))
+            return hip_err;
+
+        return hipMemcpy(*this,
+                         that,
+                         sizeof(T) * this->size(),
+                         that.use_HMM ? hipMemcpyHostToHost : hipMemcpyDeviceToHost);
     }
 
     //!
     //! @brief Returns the length of the vector.
     //!
-    rocblas_int n() const
+    size_t n() const
     {
-        return this->m_n;
+        return m_n;
     }
 
     //!
     //! @brief Returns the increment of the vector.
     //!
-    rocblas_int inc() const
+    int64_t inc() const
     {
-        return this->m_inc;
+        return m_inc;
     }
 
     //!
     //! @brief Returns the batch count (always 1).
     //!
-    rocblas_int batch_count() const
+    static constexpr rocblas_int batch_count()
     {
         return 1;
     }
@@ -1540,24 +1826,102 @@ struct host_vector : std::vector<T>
     //!
     //! @brief Returns the stride (out of context, always 0)
     //!
-    rocblas_stride stride() const
+    static constexpr rocblas_stride stride()
     {
         return 0;
     }
 
     //!
-    //! @brief Check if memory exists.
-    //! @return hipSuccess if memory exists, hipErrorOutOfMemory otherwise.
+    //! @brief Check if memory exists (out of context, always hipSuccess)
     //!
-    hipError_t memcheck() const
+    static constexpr hipError_t memcheck()
     {
-        return (nullptr != (const T*)this) ? hipSuccess : hipErrorOutOfMemory;
+        return hipSuccess;
     }
 
 private:
-    rocblas_int m_n{};
-    rocblas_int m_inc{};
+    size_t  m_n   = 0;
+    int64_t m_inc = 0;
+
+    static size_t calculate_nmemb(size_t n, int64_t inc)
+    {
+        return 1 + ((n ? n : 1) - 1) * std::abs(inc ? inc : 1);
+    }
 };
+
+/*************************************************************************************************************************
+//! @brief enum to check the type of matrix
+ ************************************************************************************************************************/
+typedef enum rocblas_check_matrix_type_
+{
+    // General matrix
+    rocblas_client_general_matrix,
+
+    // Hermitian matrix
+    rocblas_client_hermitian_matrix,
+
+    // Symmetric matrix
+    rocblas_client_symmetric_matrix,
+
+    // Triangular matrix
+    rocblas_client_triangular_matrix,
+
+    // Diagonally dominant triangular matrix
+    rocblas_client_diagonally_dominant_triangular_matrix,
+
+} rocblas_check_matrix_type;
+
+template <typename U, typename T>
+void rocblas_init_matrix(rocblas_check_matrix_type matrix_type,
+                         const char                uplo,
+                         T                         rand_gen(),
+                         U&                        hA)
+{
+    for(int64_t batch_index = 0; batch_index < hA.batch_count(); ++batch_index)
+    {
+        auto*   A   = hA[batch_index];
+        int64_t M   = hA.m();
+        int64_t N   = hA.n();
+        int64_t lda = hA.lda();
+        if(matrix_type == rocblas_client_general_matrix)
+        {
+#ifdef _OPENMP
+#pragma omp parallel for
+#endif
+            for(size_t j = 0; j < N; ++j)
+                for(size_t i = 0; i < M; ++i)
+                    A[i + j * lda] = rand_gen();
+        }
+    }
+}
+
+template <typename U, typename T>
+void rocblas_init_matrix_alternating_sign(rocblas_check_matrix_type matrix_type,
+                                          const char                uplo,
+                                          T                         rand_gen(),
+                                          U&                        hA)
+{
+    for(int64_t batch_index = 0; batch_index < hA.batch_count(); ++batch_index)
+    {
+        auto* A   = hA[batch_index];
+        auto  M   = hA.m();
+        auto  N   = hA.n();
+        auto  lda = hA.lda();
+
+        if(matrix_type == rocblas_client_general_matrix)
+        {
+#ifdef _OPENMP
+#pragma omp parallel for
+#endif
+            for(size_t i = 0; i < M; ++i)
+                for(size_t j = 0; j < N; ++j)
+                {
+                    auto value     = rand_gen();
+                    A[i + j * lda] = (i ^ j) & 1 ? T(value) : T(negate(value));
+                }
+        }
+    }
+}
 
 /* ============================================================================================ */
 /*! \brief  matrix/vector initialization: */
@@ -1567,7 +1931,7 @@ private:
 // Initialize vector with random values
 template <typename T>
 inline void rocblas_init(
-    std::vector<T>& A, size_t M, size_t N, size_t lda, rocblas_stride stride = 0, size_t batch_count = 1)
+    host_vector<T>& A, size_t M, size_t N, size_t lda, rocblas_stride stride = 0, size_t batch_count = 1)
 {
     for(size_t i_batch = 0; i_batch < batch_count; i_batch++)
         for(size_t i = 0; i < M; ++i)
@@ -1577,7 +1941,7 @@ inline void rocblas_init(
 
 template <typename T>
 inline void rocblas_init_sin(
-    std::vector<T>& A, size_t M, size_t N, size_t lda, rocblas_stride stride = 0, size_t batch_count = 1)
+    host_vector<T>& A, size_t M, size_t N, size_t lda, rocblas_stride stride = 0, size_t batch_count = 1)
 {
     for(size_t i_batch = 0; i_batch < batch_count; i_batch++)
         for(size_t i = 0; i < M; ++i)
@@ -1585,81 +1949,52 @@ inline void rocblas_init_sin(
                 A[i + j * lda + i_batch * stride] = T(sin(i + j * lda + i_batch * stride));
 }
 
-// Initialize matrix so adjacent entries have alternating sign.
-// In gemm if either A or B are initialized with alernating
-// sign the reduction sum will be summing positive
-// and negative numbers, so it should not get too large.
-// This helps reduce floating point inaccuracies for 16bit
-// arithmetic where the exponent has only 5 bits, and the
-// mantissa 10 bits.
-template <typename T>
-inline void rocblas_init_alternating_sign(
-    std::vector<T>& A, size_t M, size_t N, size_t lda, rocblas_stride stride = 0, size_t batch_count = 1)
+template <typename T, typename U>
+void rocblas_init_matrix_trig(rocblas_check_matrix_type matrix_type,
+                              const char                uplo,
+                              U&                        hA,
+                              bool                      seedReset = false)
 {
-    for(size_t i_batch = 0; i_batch < batch_count; i_batch++)
-        for(size_t i = 0; i < M; ++i)
-            for(size_t j = 0; j < N; ++j)
-            {
-                auto value                        = random_generator<T>();
-                A[i + j * lda + i_batch * stride] = (i ^ j) & 1 ? value : negate(value);
-            }
-}
+    for(int64_t batch_index = 0; batch_index < hA.batch_count(); ++batch_index)
+    {
+        auto* A   = hA[batch_index];
+        auto  M   = hA.m();
+        auto  N   = hA.n();
+        auto  lda = hA.lda();
 
-template <typename T>
-inline void rocblas_init_cos(
-    std::vector<T>& A, size_t M, size_t N, size_t lda, rocblas_stride stride = 0, size_t batch_count = 1)
-{
-    for(size_t i_batch = 0; i_batch < batch_count; i_batch++)
-        for(size_t i = 0; i < M; ++i)
-            for(size_t j = 0; j < N; ++j)
-                A[i + j * lda + i_batch * stride] = T(cos(i + j * lda + i_batch * stride));
-}
-
-/*! \brief  symmetric matrix initialization: */
-// for real matrix only
-template <typename T>
-inline void rocblas_init_symmetric(std::vector<T>& A, size_t N, size_t lda)
-{
-    for(size_t i = 0; i < N; ++i)
-        for(size_t j = 0; j <= i; ++j)
+        if(matrix_type == rocblas_client_general_matrix)
         {
-            auto value = random_generator<T>();
-            // Warning: It's undefined behavior to assign to the
-            // same array element twice in same sequence point (i==j)
-            A[j + i * lda] = value;
-            A[i + j * lda] = value;
+#ifdef _OPENMP
+#pragma omp parallel for
+#endif
+            for(size_t i = 0; i < M; ++i)
+                for(size_t j = 0; j < N; ++j)
+                    A[i + j * lda] = T(seedReset ? cos(i + j * lda) : sin(i + j * lda));
         }
-}
-
-/*! \brief  hermitian matrix initialization: */
-// for complex matrix only, the real/imag part would be initialized with the same value
-// except the diagonal elment must be real
-template <typename T>
-inline void rocblas_init_hermitian(std::vector<T>& A, size_t N, size_t lda)
-{
-    for(size_t i = 0; i < N; ++i)
-        for(size_t j = 0; j <= i; ++j)
-        {
-            auto value     = random_generator<T>();
-            A[j + i * lda] = value;
-            value.y        = (i == j) ? 0 : negate(value.y);
-            A[i + j * lda] = value;
-        }
-}
-
-// Initialize vector with HPL-like random values
-template <typename T>
-inline void rocblas_init_hpl(
-    std::vector<T>& A, size_t M, size_t N, size_t lda, rocblas_stride stride = 0, size_t batch_count = 1)
-{
-    for(size_t i_batch = 0; i_batch < batch_count; i_batch++)
-        for(size_t i = 0; i < M; ++i)
-            for(size_t j = 0; j < N; ++j)
-                A[i + j * lda + i_batch * stride] = random_hpl_generator<T>();
+    }
 }
 
 /* ============================================================================================ */
 /*! \brief  Initialize an array with random data, with NaN where appropriate */
+
+/*! \brief For testing purposes, copy one matrix into another with different leading dimensions  */
+template <typename T, typename U>
+void copy_matrix_with_different_leading_dimensions(T& hB, U& hC)
+{
+    rocblas_int M           = hB.m();
+    rocblas_int N           = hB.n();
+    size_t      ldb         = hB.lda();
+    size_t      ldc         = hC.lda();
+    rocblas_int batch_count = hB.batch_count();
+    for(int b = 0; b < batch_count; b++)
+    {
+        auto* B = hB[b];
+        auto* C = hC[b];
+        for(int i = 0; i < M; i++)
+            for(int j = 0; j < N; j++)
+                C[i + j * ldc] = B[i + j * ldb];
+    }
+}
 
 template <typename T>
 inline void rocblas_init_nan(T* A, size_t N)
@@ -1669,8 +2004,18 @@ inline void rocblas_init_nan(T* A, size_t N)
 }
 
 template <typename T>
+void rocblas_init_nan(
+    T* A, size_t M, size_t N, size_t lda, size_t stride = 0, size_t batch_count = 1)
+{
+    for(size_t i_batch = 0; i_batch < batch_count; i_batch++)
+        for(size_t i = 0; i < M; ++i)
+            for(size_t j = 0; j < N; ++j)
+                A[i + j * lda + i_batch * stride] = T(rocblas_nan_rng());
+}
+
+template <typename T>
 inline void rocblas_init_nan(
-    std::vector<T>& A, size_t M, size_t N, size_t lda, rocblas_stride stride = 0, size_t batch_count = 1)
+    host_vector<T>& A, size_t M, size_t N, size_t lda, rocblas_stride stride = 0, size_t batch_count = 1)
 {
     for(size_t i_batch = 0; i_batch < batch_count; i_batch++)
         for(size_t i = 0; i < M; ++i)
@@ -2388,6 +2733,801 @@ Barrier perfBarrier;
 Barrier memBarrier;
 Barrier memBarrier2;
 
+template <typename T>
+inline rocblas_stride align_stride(rocblas_stride stride)
+{
+    // hipMalloc aligns pointers on 256 byte boundaries (or a multiple of 256)
+    // this function is to align stride*sizeof(T) on 256 byte boundaries
+    size_t byte_alignment = 256;
+
+    if(byte_alignment % sizeof(T) == 0)
+    {
+        size_t type_alignment = byte_alignment / sizeof(T);
+        return ((stride - 1) / type_alignment + 1) * type_alignment;
+    }
+    else
+    {
+        return ((stride - 1) / byte_alignment + 1) * byte_alignment;
+    }
+}
+
+//
+// Forward declaration of the host matrix.
+//
+template <typename T>
+class host_matrix;
+
+//!
+//! @brief pseudo-matrix subclass which uses device memory
+//!
+template <typename T>
+class device_matrix : public d_vector<T>
+{
+
+public:
+    //!
+    //! @brief Disallow copying.
+    //!
+    device_matrix(const device_matrix&) = delete;
+
+    //!
+    //! @brief Disallow assigning
+    //!
+    device_matrix& operator=(const device_matrix&) = delete;
+
+    //!
+    //! @brief Constructor.
+    //! @param m           The number of rows of the Matrix.
+    //! @param n           The number of cols of the Matrix.
+    //! @param lda         The leading dimension of the Matrix.
+    //! @param HMM         HipManagedMemory Flag.
+    //!
+    explicit device_matrix(size_t m, size_t n, size_t lda, bool HMM = false)
+        : d_vector<T>{n * lda, HMM}
+        , m_m{m}
+        , m_n{n}
+        , m_lda{lda}
+        , m_data{this->device_vector_setup()}
+    {
+    }
+
+    //!
+    //! @brief Destructor.
+    //!
+    ~device_matrix()
+    {
+        this->device_vector_teardown(m_data);
+        m_data = nullptr;
+    }
+
+    //!
+    //! @brief Returns the rows of the Matrix.
+    //!
+    size_t m() const
+    {
+        return this->m_m;
+    }
+
+    //!
+    //! @brief Returns the cols of the Matrix.
+    //!
+    size_t n() const
+    {
+        return this->m_n;
+    }
+
+    //!
+    //! @brief Returns the leading dimension of the Matrix.
+    //!
+    size_t lda() const
+    {
+        return this->m_lda;
+    }
+
+    //!
+    //! @brief Returns the batch count (always 1).
+    //!
+    rocblas_int batch_count() const
+    {
+        return 1;
+    }
+
+    //!
+    //! @brief Returns the stride (out of context, always 0)
+    //!
+    rocblas_stride stride() const
+    {
+        return 0;
+    }
+
+    //!
+    //! @brief Decay into pointer wherever pointer is expected.
+    //!
+    operator T*()
+    {
+        return m_data;
+    }
+
+    //!
+    //! @brief Decay into constant pointer wherever pointer is expected.
+    //!
+    operator const T*() const
+    {
+        return m_data;
+    }
+
+    //!
+    //! @brief Transfer data from a host matrix.
+    //! @param that The host matrix.
+    //! @return the hip error.
+    //!
+    hipError_t transfer_from(const host_matrix<T>& that)
+    {
+        return hipMemcpy(m_data,
+                         (const T*)that,
+                         this->nmemb() * sizeof(T),
+                         this->use_HMM ? hipMemcpyHostToHost : hipMemcpyHostToDevice);
+    }
+
+    hipError_t memcheck() const
+    {
+        return !this->nmemb() || m_data ? hipSuccess : hipErrorOutOfMemory;
+    }
+
+private:
+    size_t m_m   = 0;
+    size_t m_n   = 0;
+    size_t m_lda = 0;
+    T*     m_data{};
+};
+
+//
+// Local declaration of the host strided batch matrix.
+//
+template <typename T>
+class host_strided_batch_matrix;
+
+//!
+//! @brief Implementation of a strided batched matrix on device.
+//!
+template <typename T>
+class device_strided_batch_matrix : public d_vector<T>
+{
+public:
+    //!
+    //! @brief Disallow copying.
+    //!
+    device_strided_batch_matrix(const device_strided_batch_matrix&) = delete;
+
+    //!
+    //! @brief Disallow assigning.
+    //!
+    device_strided_batch_matrix& operator=(const device_strided_batch_matrix&) = delete;
+
+    //!
+    //! @brief Constructor.
+    //! @param m           The number of rows of the Matrix.
+    //! @param n           The number of cols of the Matrix.
+    //! @param lda         The leading dimension of the Matrix.
+    //! @param stride The stride.
+    //! @param batch_count The batch count.
+    //! @param HMM         HipManagedMemory Flag.
+    //!
+    explicit device_strided_batch_matrix(size_t         m,
+                                         size_t         n,
+                                         size_t         lda,
+                                         rocblas_stride stride,
+                                         int64_t        batch_count,
+                                         bool           HMM = false)
+        : d_vector<T>(calculate_nmemb(n, lda, stride, batch_count), HMM)
+        , m_m(m)
+        , m_n(n)
+        , m_lda(lda)
+        , m_stride(stride)
+        , m_batch_count(batch_count)
+    {
+        bool valid_parameters = calculate_nmemb(n, lda, stride, batch_count) > 0;
+        if(valid_parameters)
+        {
+            this->m_data = this->device_vector_setup();
+        }
+    }
+
+    //!
+    //! @brief Destructor.
+    //!
+    ~device_strided_batch_matrix()
+    {
+        if(nullptr != this->m_data)
+        {
+            this->device_vector_teardown(this->m_data);
+            this->m_data = nullptr;
+        }
+    }
+
+    //!
+    //! @brief Returns the data pointer.
+    //!
+    T* data()
+    {
+        return this->m_data;
+    }
+
+    //!
+    //! @brief Returns the data pointer.
+    //!
+    const T* data() const
+    {
+        return this->m_data;
+    }
+
+    //!
+    //! @brief Returns the rows of the Matrix.
+    //!
+    size_t m() const
+    {
+        return this->m_m;
+    }
+
+    //!
+    //! @brief Returns the cols of the Matrix.
+    //!
+    size_t n() const
+    {
+        return this->m_n;
+    }
+
+    //!
+    //! @brief Returns the leading dimension of the Matrix.
+    //!
+    size_t lda() const
+    {
+        return this->m_lda;
+    }
+
+    //!
+    //! @brief Returns the batch count.
+    //!
+    int64_t batch_count() const
+    {
+        return this->m_batch_count;
+    }
+
+    //!
+    //! @brief Returns the stride value.
+    //!
+    rocblas_stride stride() const
+    {
+        return this->m_stride;
+    }
+
+    //!
+    //! @brief Returns pointer.
+    //! @param batch_index The batch index.
+    //! @return A mutable pointer to the batch_index'th matrix.
+    //!
+    T* operator[](int64_t batch_index)
+    {
+        return (this->m_stride >= 0)
+                   ? this->m_data + batch_index * this->m_stride
+                   : this->m_data + (batch_index + 1 - this->m_batch_count) * this->m_stride;
+    }
+
+    //!
+    //! @brief Returns non-mutable pointer.
+    //! @param batch_index The batch index.
+    //! @return A non-mutable mutable pointer to the batch_index'th matrix.
+    //!
+    const T* operator[](int64_t batch_index) const
+    {
+        return (this->m_stride >= 0)
+                   ? this->m_data + batch_index * this->m_stride
+                   : this->m_data + (batch_index + 1 - this->m_batch_count) * this->m_stride;
+    }
+
+    //!
+    //! @brief Cast operator.
+    //! @remark Returns the pointer of the first matrix.
+    //!
+    operator T*()
+    {
+        return (*this)[0];
+    }
+
+    //!
+    //! @brief Non-mutable cast operator.
+    //! @remark Returns the non-mutable pointer of the first matrix.
+    //!
+    operator const T*() const
+    {
+        return (*this)[0];
+    }
+
+    //!
+    //! @brief Tell whether resource allocation failed.
+    //!
+    explicit operator bool() const
+    {
+        return nullptr != this->m_data;
+    }
+
+    //!
+    //! @brief Transfer data from a strided batched matrix on device.
+    //! @param that That strided batched matrix on device.
+    //! @return The hip error.
+    //!
+    hipError_t transfer_from(const host_strided_batch_matrix<T>& that)
+    {
+        return hipMemcpy(this->data(),
+                         that.data(),
+                         sizeof(T) * this->nmemb(),
+                         this->use_HMM ? hipMemcpyHostToHost : hipMemcpyHostToDevice);
+    }
+
+    //!
+    //! @brief Broadcast data from one matrix on host to each batch_count matrices.
+    //! @param that That matrix on host.
+    //! @return The hip error.
+    //!
+    hipError_t broadcast_one_matrix_from(const host_matrix<T>& that)
+    {
+        hipError_t status = hipSuccess;
+        for(int64_t batch_index = 0; batch_index < m_batch_count; batch_index++)
+        {
+            status = hipMemcpy(this->data() + (batch_index * m_stride),
+                               that.data(),
+                               sizeof(T) * this->m_n * this->m_lda,
+                               this->use_HMM ? hipMemcpyHostToHost : hipMemcpyHostToDevice);
+            if(status != hipSuccess)
+                break;
+        }
+        return status;
+    }
+
+    //!
+    //! @brief Check if memory exists.
+    //! @return hipSuccess if memory exists, hipErrorOutOfMemory otherwise.
+    //!
+    hipError_t memcheck() const
+    {
+        bool valid_parameters = calculate_nmemb(m_n, m_lda, m_stride, m_batch_count) > 0;
+
+        if(*this || !valid_parameters)
+            return hipSuccess;
+        else
+            return hipErrorOutOfMemory;
+    }
+
+private:
+    size_t         m_m{};
+    size_t         m_n{};
+    size_t         m_lda{};
+    rocblas_stride m_stride{};
+    int64_t        m_batch_count{};
+    T*             m_data{};
+
+    static size_t calculate_nmemb(size_t n, size_t lda, rocblas_stride stride, int64_t batch_count)
+    {
+        return lda * n + size_t(batch_count - 1) * std::abs(stride);
+    }
+};
+
+template <typename T>
+struct host_matrix : std::vector<T, host_memory_allocator<T>>
+{
+    // Inherit constructors
+    using std::vector<T, host_memory_allocator<T>>::vector;
+
+    //!
+    //! @brief Constructor.
+    //!
+    host_matrix(size_t m, size_t n, size_t lda)
+        : std::vector<T, host_memory_allocator<T>>(n * lda)
+        , m_m(m)
+        , m_n(n)
+        , m_lda(lda)
+    {
+    }
+
+    //!
+    //! @brief Copy constructor from host_matrix of other types convertible to T
+    //!
+    template <typename U, std::enable_if_t<std::is_convertible<U, T>{}, int> = 0>
+    host_matrix(const host_matrix<U>& x)
+        : std::vector<T, host_memory_allocator<T>>(x.size())
+        , m_m(x.size())
+        , m_n(1)
+        , m_lda(1)
+    {
+        for(size_t i = 0; i < m_m; ++i)
+            (*this)[i] = x[i];
+    }
+
+    //!
+    //! @brief Decay into pointer wherever pointer is expected
+    //!
+    operator T*()
+    {
+        return this->data();
+    }
+
+    //!
+    //! @brief Decay into constant pointer wherever constant pointer is expected
+    //!
+    operator const T*() const
+    {
+        return this->data();
+    }
+
+    //!
+    //! @brief Transfer from a device matrix.
+    //! @param  that That device matrix.
+    //! @return the hip error.
+    //!
+    hipError_t transfer_from(const device_matrix<T>& that)
+    {
+        hipError_t hip_err;
+
+        if(that.use_HMM && hipSuccess != (hip_err = hipDeviceSynchronize()))
+            return hip_err;
+
+        return hipMemcpy(*this,
+                         that,
+                         sizeof(T) * this->size(),
+                         that.use_HMM ? hipMemcpyHostToHost : hipMemcpyDeviceToHost);
+    }
+
+    //!
+    //! @brief Transfer only the first matrix from a device_strided_batch matrix.
+    //! @param  that That device_strided_batch matrix.
+    //! @return the hip error.
+    //!
+    hipError_t transfer_one_matrix_from(const device_strided_batch_matrix<T>& that)
+    {
+        hipError_t hip_err;
+
+        if(that.use_HMM && hipSuccess != (hip_err = hipDeviceSynchronize()))
+            return hip_err;
+
+        return hipMemcpy(*this,
+                         that,
+                         sizeof(T) * this->size(),
+                         that.use_HMM ? hipMemcpyHostToHost : hipMemcpyDeviceToHost);
+    }
+
+    //!
+    //! @brief Returns the rows of the Matrix.
+    //!
+    size_t m() const
+    {
+        return this->m_m;
+    }
+
+    //!
+    //! @brief Returns the cols of the Matrix.
+    //!
+    size_t n() const
+    {
+        return this->m_n;
+    }
+
+    //!
+    //! @brief Returns the leading dimension of the Matrix.
+    //!
+    size_t lda() const
+    {
+        return this->m_lda;
+    }
+
+    //!
+    //! @brief Returns the batch count (always 1).
+    //!
+    static constexpr rocblas_int batch_count()
+    {
+        return 1;
+    }
+
+    //!
+    //! @brief Returns the stride (out of context, always 0)
+    //!
+    static constexpr rocblas_stride stride()
+    {
+        return 0;
+    }
+
+    //!
+    //! @brief Random access to the Matrices.
+    //! @param batch_index the batch index.
+    //! @return The mutable pointer.
+    //!
+    T* operator[](int64_t batch_index)
+    {
+        return this->data();
+    }
+
+    //!
+    //! @brief Constant random access to the Matrices.
+    //! @param batch_index the batch index.
+    //! @return The non-mutable pointer.
+    //!
+    const T* operator[](int64_t batch_index) const
+    {
+        return this->data();
+    }
+
+    //!
+    //! @brief Check if memory exists (out of context, always hipSuccess)
+    //!
+    static constexpr hipError_t memcheck()
+    {
+        return hipSuccess;
+    }
+
+private:
+    size_t m_m   = 0;
+    size_t m_n   = 0;
+    size_t m_lda = 0;
+};
+
+//!
+//! @brief Implementation of a host strided batched matrix.
+//!
+template <typename T>
+class host_strided_batch_matrix
+{
+public:
+    //!
+    //! @brief Disallow copying.
+    //!
+    host_strided_batch_matrix(const host_strided_batch_matrix&) = delete;
+
+    //!
+    //! @brief Disallow assigning.
+    //!
+    host_strided_batch_matrix& operator=(const host_strided_batch_matrix&) = delete;
+
+    //!
+    //! @brief Constructor.
+    //! @param m           The number of rows of the Matrix.
+    //! @param n           The number of cols of the Matrix.
+    //! @param lda         The leading dimension of the Matrix.
+    //! @param stride The stride.
+    //! @param batch_count The batch count.
+    //!
+    explicit host_strided_batch_matrix(
+        size_t m, size_t n, size_t lda, rocblas_stride stride, int64_t batch_count)
+        : m_m(m)
+        , m_n(n)
+        , m_lda(lda)
+        , m_stride(stride)
+        , m_batch_count(batch_count)
+        , m_nmemb(calculate_nmemb(n, lda, stride, batch_count))
+    {
+        bool valid_parameters = this->m_nmemb > 0;
+        if(valid_parameters)
+        {
+            this->m_data = (T*)host_calloc_throw(this->m_nmemb, sizeof(T));
+        }
+    }
+
+    //!
+    //! @brief Destructor.
+    //!
+    ~host_strided_batch_matrix()
+    {
+        if(nullptr != this->m_data)
+        {
+            free(this->m_data);
+            this->m_data = nullptr;
+        }
+    }
+
+    //!
+    //! @brief Returns the data pointer.
+    //!
+    T* data()
+    {
+        return this->m_data;
+    }
+
+    //!
+    //! @brief Returns the data pointer.
+    //!
+    const T* data() const
+    {
+        return this->m_data;
+    }
+
+    //!
+    //! @brief Returns the rows of the Matrix.
+    //!
+    size_t m() const
+    {
+        return this->m_m;
+    }
+
+    //!
+    //! @brief Returns the cols of the Matrix.
+    //!
+    size_t n() const
+    {
+        return this->m_n;
+    }
+
+    //!
+    //! @brief Returns the leading dimension of the Matrix.
+    //!
+    size_t lda() const
+    {
+        return this->m_lda;
+    }
+
+    //!
+    //! @brief Returns the batch count.
+    //!
+    int64_t batch_count() const
+    {
+        return this->m_batch_count;
+    }
+
+    //!
+    //! @brief Returns the stride.
+    //!
+    rocblas_stride stride() const
+    {
+        return this->m_stride;
+    }
+
+    //!
+    //! @brief Returns nmemb.
+    //!
+    size_t nmemb() const
+    {
+        return this->m_nmemb;
+    }
+
+    //!
+    //! @brief Returns pointer.
+    //! @param batch_index The batch index.
+    //! @return A mutable pointer to the batch_index'th matrix.
+    //!
+    T* operator[](int64_t batch_index)
+    {
+
+        return (this->m_stride >= 0)
+                   ? this->m_data + this->m_stride * batch_index
+                   : this->m_data + (batch_index + 1 - this->m_batch_count) * this->m_stride;
+    }
+
+    //!
+    //! @brief Returns non-mutable pointer.
+    //! @param batch_index The batch index.
+    //! @return A non-mutable mutable pointer to the batch_index'th matrix.
+    //!
+    const T* operator[](int64_t batch_index) const
+    {
+
+        return (this->m_stride >= 0)
+                   ? this->m_data + this->m_stride * batch_index
+                   : this->m_data + (batch_index + 1 - this->m_batch_count) * this->m_stride;
+    }
+
+    //!
+    //! @brief Cast operator.
+    //! @remark Returns the pointer of the first matrix.
+    //!
+    operator T*()
+    {
+        return (*this)[0];
+    }
+
+    //!
+    //! @brief Non-mutable cast operator.
+    //! @remark Returns the non-mutable pointer of the first matrix.
+    //!
+    operator const T*() const
+    {
+        return (*this)[0];
+    }
+
+    //!
+    //! @brief Tell whether resource allocation failed.
+    //!
+    explicit operator bool() const
+    {
+        return nullptr != this->m_data;
+    }
+
+    //!
+    //! @brief Copy data from a strided batched matrix on host.
+    //! @param that That strided batched matrix on host.
+    //! @return true if successful, false otherwise.
+    //!
+    bool copy_from(const host_strided_batch_matrix& that)
+    {
+        if(that.m() == this->m_m && that.n() == this->m_n && that.lda() == this->m_lda
+           && that.stride() == this->m_stride && that.batch_count() == this->m_batch_count)
+        {
+            memcpy(this->data(), that.data(), sizeof(T) * this->m_nmemb);
+            return true;
+        }
+        else
+        {
+            return false;
+        }
+    }
+
+    //!
+    //! @brief Transfer data from a strided batched matrix on device.
+    //! @param that That strided batched matrix on device.
+    //! @return The hip error.
+    //!
+    hipError_t transfer_from(const device_strided_batch_matrix<T>& that)
+    {
+        hipError_t hip_err;
+
+        if(that.use_HMM && hipSuccess != (hip_err = hipDeviceSynchronize()))
+            return hip_err;
+
+        return hipMemcpy(this->m_data,
+                         that.data(),
+                         sizeof(T) * this->m_nmemb,
+                         that.use_HMM ? hipMemcpyHostToHost : hipMemcpyDeviceToHost);
+    }
+
+    //!
+    //! @brief Check if memory exists.
+    //! @return hipSuccess if memory exists, hipErrorOutOfMemory otherwise.
+    //!
+    hipError_t memcheck() const
+    {
+        return ((bool)*this) ? hipSuccess : hipErrorOutOfMemory;
+    }
+
+private:
+    size_t         m_m{};
+    size_t         m_n{};
+    size_t         m_lda{};
+    rocblas_stride m_stride{};
+    int64_t        m_batch_count{};
+    size_t         m_nmemb{};
+    T*             m_data{};
+
+    static size_t calculate_nmemb(size_t n, size_t lda, rocblas_stride stride, int64_t batch_count)
+    {
+        return lda * n + size_t(batch_count - 1) * std::abs(stride);
+    }
+};
+
+//!
+//! @brief Overload output operator.
+//! @param os The ostream.
+//! @param that That host strided batch matrix.
+//!
+template <typename T>
+internal_ostream& operator<<(internal_ostream&           os,
+                                     const host_strided_batch_matrix<T>& that)
+{
+    auto m           = that.m();
+    auto n           = that.n();
+    auto lda         = that.lda();
+    auto batch_count = that.batch_count();
+
+    for(int64_t batch_index = 0; batch_index < batch_count; ++batch_index)
+    {
+        auto batch_data = that[batch_index];
+        os << "[" << batch_index << "]" << std::endl;
+        for(size_t i = 0; i < n; ++i)
+        {
+            for(size_t j = 0; j < m; ++j)
+                os << ", " << batch_data[j + i * lda];
+        }
+        os << std::endl;
+    }
+
+    return os;
+}
+
 void readArgs(int argc, char* argv[], Arguments& arg)
 {
     boost::program_options::options_description desc("rocblas-bench command line options");
@@ -2714,29 +3854,22 @@ void readArgs(int argc, char* argv[], Arguments& arg)
         set_device(device_id);
 }
 
-template <typename Ti, typename To = Ti>
-void loadFromBin(rocblas_operation transA,
-                 rocblas_operation transB,
-                 rocblas_int       M,
-                 rocblas_int       N,
-                 rocblas_int       K,
-                 host_vector<Ti>&   hA,
-                 rocblas_int       lda,
+template <typename Ti, typename To = Ti, typename Ui, typename Uo>
+void loadFromBin(Ui&               hA,
                  std::string       ADataFile,
-                 host_vector<Ti>&   hB,
-                 rocblas_int       ldb,
+                 Ui&               hB,
                  std::string       BDataFile,
-                 host_vector<To>&   hC,
-                 rocblas_int       ldc,
-                 std::string       CDataFile,
-                 rocblas_int       batch_count)
+                 Uo&               hC,
+                 std::string       CDataFile)
 {
     {
-        size_t sz = lda * (transA == rocblas_operation_none ? K : M) * sizeof(Ti) * batch_count;
+        size_t sz = hA.lda() * hA.n() * sizeof(Ti) * hA.batch_count();
         std::ifstream FILE(ADataFile, std::ios::in | std::ofstream::binary);
         FILE.seekg(0, FILE.end);
         int fileLength = FILE.tellg();
         FILE.seekg(0, FILE.beg);
+        auto* A   = hA[0];
+
 
         if(sz > fileLength)
         {
@@ -2745,15 +3878,16 @@ void loadFromBin(rocblas_operation transA,
             std::cout << "Not enough elements in A data file...exiting" << std::endl;
             exit(1);
         }
-        FILE.read(reinterpret_cast<char*>(&hA[0]), sz);
+        FILE.read(reinterpret_cast<char*>(&A[0]), sz);
     }
 
     {
-        size_t sz = ldb * (transB == rocblas_operation_none ? N : K) * sizeof(Ti) * batch_count;
+        size_t sz = hB.lda() * hB.n() * sizeof(Ti) * hB.batch_count();
         std::ifstream FILE(BDataFile, std::ios::in | std::ofstream::binary);
         FILE.seekg(0, FILE.end);
         int fileLength = FILE.tellg();
         FILE.seekg(0, FILE.beg);
+        auto* B   = hB[0];
 
         if(sz > fileLength)
         {
@@ -2762,15 +3896,16 @@ void loadFromBin(rocblas_operation transA,
             std::cout << "Not enough elements in B data file...exiting" << std::endl;
             exit(1);
         }
-        FILE.read(reinterpret_cast<char*>(&hB[0]), sz);
+        FILE.read(reinterpret_cast<char*>(&B[0]), sz);
     }
 
     {
-        size_t        sz = ldc * N * sizeof(To) * batch_count;
+        size_t sz = hC.lda() * hC.n() * sizeof(Ti) * hC.batch_count();
         std::ifstream FILE(CDataFile, std::ios::in | std::ofstream::binary);
         FILE.seekg(0, FILE.end);
         int fileLength = FILE.tellg();
         FILE.seekg(0, FILE.beg);
+        auto* C   = hC[0];
 
         if(sz > fileLength)
         {
@@ -2779,50 +3914,121 @@ void loadFromBin(rocblas_operation transA,
             std::cout << "Not enough elements in C data file...exiting" << std::endl;
             exit(1);
         }
-        FILE.read(reinterpret_cast<char*>(&hC[0]), sz);
+        FILE.read(reinterpret_cast<char*>(&C[0]), sz);
     }
 }
 
 template <typename Ti, typename To>
-void storeInitToBin(rocblas_operation transA,
-                rocblas_operation transB,
-                rocblas_int       M,
-                rocblas_int       N,
-                rocblas_int       K,
-                host_vector<Ti>&   hA,
-                rocblas_int       lda,
-                std::string       ADataFile,
-                host_vector<Ti>&   hB,
-                rocblas_int       ldb,
-                std::string       BDataFile,
-                host_vector<To>&   hC,
-                rocblas_int       ldc,
-                std::string       CDataFile,
-                rocblas_int       batch_count)
+void storeInitToBin(host_strided_batch_matrix<Ti>&                hA,
+                    std::string       ADataFile,
+                    host_strided_batch_matrix<Ti>&                hB,
+                    std::string       BDataFile,
+                    host_strided_batch_matrix<To>&               hC,
+                    std::string       CDataFile)
 {
     std::string preFix;
     if(multi_device>1)
     {
         int deviceId;
-        hipGetDevice(&deviceId);
+        CHECK_HIP_ERROR(hipGetDevice(&deviceId));
         preFix = "device_" + std::to_string(deviceId) + "_";
     }
     {
-        size_t sz = lda * (transA == rocblas_operation_none ? K : M) * sizeof(Ti) * batch_count;
+        auto* A = hA[0];
+        size_t sz = hA.stride() * sizeof(Ti) * hA.batch_count();
         std::ofstream FILE(preFix+ADataFile, std::ios::out | std::ofstream::binary);
-        FILE.write(reinterpret_cast<const char*>(&hA[0]), sz);
+        FILE.write(reinterpret_cast<const char*>(&A[0]), sz);
     }
 
     {
-        size_t sz = ldb * (transB == rocblas_operation_none ? N : K) * sizeof(Ti) * batch_count;
+        auto* B = hB[0];
+        size_t sz = hB.stride() * sizeof(Ti) * hB.batch_count();
         std::ofstream FILE(preFix+BDataFile, std::ios::out | std::ofstream::binary);
-        FILE.write(reinterpret_cast<const char*>(&hB[0]), sz);
+        FILE.write(reinterpret_cast<const char*>(&B[0]), sz);
     }
 
     {
-        size_t        sz = ldc * N * sizeof(To) * batch_count;
+        auto* C = hC[0];
+        size_t        sz = hC.stride() * sizeof(To) * hC.batch_count();
         std::ofstream FILE(preFix+CDataFile, std::ios::out | std::ofstream::binary);
-        FILE.write(reinterpret_cast<const char*>(&hC[0]), sz);
+        FILE.write(reinterpret_cast<const char*>(&C[0]), sz);
+    }
+}
+
+template <typename Ti, typename To>
+void storeInitToBin(host_matrix<Ti>&                hA,
+                    std::string       ADataFile,
+                    host_matrix<Ti>&                hB,
+                    std::string       BDataFile,
+                    host_matrix<To>&               hC,
+                    std::string       CDataFile)
+{
+    std::string preFix;
+    if(multi_device>1)
+    {
+        int deviceId;
+        CHECK_HIP_ERROR(hipGetDevice(&deviceId));
+        preFix = "device_" + std::to_string(deviceId) + "_";
+    }
+    {
+        auto* A = hA[0];
+        size_t sz = hA.lda() * hA.n() * sizeof(Ti) * hA.batch_count();
+        std::ofstream FILE(preFix+ADataFile, std::ios::out | std::ofstream::binary);
+        FILE.write(reinterpret_cast<const char*>(&A[0]), sz);
+    }
+
+    {
+        auto* B = hB[0];
+        size_t sz = hB.lda() * hB.n() * sizeof(Ti) * hB.batch_count();
+        std::ofstream FILE(preFix+BDataFile, std::ios::out | std::ofstream::binary);
+        FILE.write(reinterpret_cast<const char*>(&B[0]), sz);
+    }
+
+    {
+        auto* C = hC[0];
+        size_t        sz = hC.lda() * hC.n() * sizeof(To) * hC.batch_count();
+        std::ofstream FILE(preFix+CDataFile, std::ios::out | std::ofstream::binary);
+        FILE.write(reinterpret_cast<const char*>(&C[0]), sz);
+    }
+}
+
+template <typename To>
+void storeOutputToBin(host_strided_batch_matrix<To>&   hO,
+                      std::string       ODataFile)
+{
+    std::string preFix;
+    if(multi_device>1)
+    {
+        int deviceId;
+        CHECK_HIP_ERROR(hipGetDevice(&deviceId));
+        preFix = "device_" + std::to_string(deviceId) + "_";
+    }
+
+    {
+        auto* O = hO[0];
+        size_t        sz = hO.stride() * sizeof(To) * hO.batch_count();
+        std::ofstream FILE(preFix+ODataFile, std::ios::out | std::ofstream::binary);
+        FILE.write(reinterpret_cast<const char*>(&O[0]), sz);
+    }
+}
+
+template <typename To>
+void storeOutputToBin(host_matrix<To>&   hO,
+                      std::string       ODataFile)
+{
+    std::string preFix;
+    if(multi_device>1)
+    {
+        int deviceId;
+        CHECK_HIP_ERROR(hipGetDevice(&deviceId));
+        preFix = "device_" + std::to_string(deviceId) + "_";
+    }
+
+    {
+        auto* O = hO[0];
+        size_t        sz = hO.lda() * hO.n() * sizeof(To) * hO.batch_count();
+        std::ofstream FILE(preFix+ODataFile, std::ios::out | std::ofstream::binary);
+        FILE.write(reinterpret_cast<const char*>(&O[0]), sz);
     }
 }
 
@@ -2837,7 +4043,7 @@ void storeOutputToBin(rocblas_int       N,
     if(multi_device>1)
     {
         int deviceId;
-        hipGetDevice(&deviceId);
+        CHECK_HIP_ERROR(hipGetDevice(&deviceId));
         preFix = "device_" + std::to_string(deviceId) + "_";
     }
 
@@ -2981,23 +4187,44 @@ struct rocm_random_narrow_range<rocblas_half> : rocm_random<rocblas_half, -100, 
 template <typename T>
 using rocm_random_1_2 = rocm_random<T, 0, 1>;
 
-template <template <typename> class RAND, typename T>
-static void init_matrix( std::vector<T>& mat, size_t m, size_t n, size_t ld, rocblas_stride stride, size_t batch)
+template <template <typename> class RAND, typename T, typename U, std::enable_if_t<!(std::is_same_v<T, int8_t> || std::is_same_v<T, int32_t>),int> = 0>
+static void init_matrix( U& mat )
 {
-    for(size_t i = 0; i < batch; ++i)
-        for(size_t j = 0; j < n; ++j)
-            for(size_t k = 0; k < m; ++k)
-                mat[i * stride + j * ld + k] = RAND<T> {}();
+    for(int64_t batch_index = 0; batch_index < mat.batch_count(); ++batch_index)
+    {
+        auto* A   = mat[batch_index];
+        auto  M   = mat.m();
+        auto  N   = mat.n();
+        auto  lda = mat.lda();
+#ifdef _OPENMP
+#pragma omp parallel for
+#endif
+        for(size_t i = 0; i < M; ++i)
+            for(size_t j = 0; j < N; ++j)
+                A[i + j * lda] = RAND<T> {}();
+    }
 }
 
-template <typename T>
-static void
-    init_constant_matrix( std::vector<T>& mat, size_t m, size_t n, size_t ld, rocblas_stride stride, size_t batch, T val)
+template <template <typename> class RAND, typename T, typename U, std::enable_if_t<(std::is_same_v<T, int8_t> || std::is_same_v<T, int32_t>),int> = 0>
+static void init_matrix( U& mat )
 {
-    for(size_t i = 0; i < batch; i++)
-        for(size_t j = 0; j < n; ++j)
-            for(size_t k = 0; k < m; ++k)
-                mat[i * stride + j * ld + k] = val;
+    rocblas_cout << "Invalid init type for int8_t...exiting" << std::endl;
+    exit(1);
+}
+
+template <typename T, typename U>
+static void init_constant_matrix( U&  hA, T val)
+{
+    for(int64_t batch_index = 0; batch_index < hA.batch_count(); ++batch_index)
+    {
+        auto* A   = hA[batch_index];
+        auto  M   = hA.m();
+        auto  N   = hA.n();
+        auto  lda = hA.lda();
+        for(size_t i = 0; i < M; ++i)
+            for(size_t j = 0; j < N; ++j)
+                A[i + j * lda] = val;
+    }
 }
 
 // Absolute value
@@ -3039,232 +4266,208 @@ inline std::ostream& operator<<(std::ostream& os, rocblas_half x)
     return os << float(x);
 }
 
-template <typename T>
-void normalizeInputs(rocblas_operation transa,
-                     rocblas_operation transb,
-                     size_t            m,
-                     size_t            n,
-                     size_t            k,
-                      std::vector<T>& a,
-                     size_t lda,
-                     rocblas_stride stride_a,
-                      std::vector<T>& b,
-                     size_t ldb,
-                     rocblas_stride stride_b,
-                     size_t batch)
+//TODO review
+template <typename T, typename U>
+void normalizeInputs(U& hA,
+                     U& hB)
 {
     // We divide each element of B by the maximum corresponding element of A such that elem(A * B) <
     // 2 ** NSIG
-    if(transa == rocblas_operation_none)
+
+    auto  lda = hA.lda();
+    auto  ldb = hB.lda();
+    for(int64_t batch_index = 0; batch_index < hA.batch_count(); ++batch_index)
     {
-        for(size_t i = 0; i < batch; i++)
+        auto* A   = hA[batch_index];
+        auto* B   = hB[batch_index];
+
+        for(size_t i = 0; i < hA.n(); ++i)
         {
-            for(size_t j = 0; j < k; ++j)
+            T scal = T(0);
+            for(size_t j = 0; j < hA.m(); ++j)
             {
-                T scal = T(0);
-                for(size_t k = 0; k < m; ++k)
-                {
-                    T val = T(rocblas_abs(a[i * stride_a + j * lda + k]));
-                    if(val > scal)
-                        scal = val;
-                }
-
-                if(!scal)
-                    abort();
-
-                scal = T(1) / scal;
-                if(transb == rocblas_operation_none)
-                    for(size_t k = 0; k < n; ++k)
-                        b[i * stride_b + j * ldb + k] *= scal;
-                else
-                    for(size_t k = 0; k < n; ++k)
-                        b[i * stride_b + k * ldb + j] *= scal;
+                T val = T(rocblas_abs(A[i * lda + j])); 
+                if(val > scal)
+                    scal = val;
             }
+
+            if(!scal)
+                abort();
+
+            scal = T(1) / scal;
+            for(size_t k = 0; k < hB.n(); ++k)
+                B[k * ldb + i] *= scal;
         }
+    }
+}
+
+/*! \brief  generate a random NaN number */
+template <typename T>
+inline T random_nan_generator()
+{
+    return T(rocblas_nan_rng{});
+}
+
+//!
+//! @brief enum to check for NaN initialization of the Input vector/matrix
+//!
+typedef enum rocblas_check_nan_init_
+{
+    // Alpha sets NaN
+    rocblas_client_alpha_sets_nan,
+
+    // Beta sets NaN
+    rocblas_client_beta_sets_nan,
+
+    //  Never set NaN
+    rocblas_client_never_set_nan
+
+} rocblas_check_nan_init;
+
+//!
+//! @brief Initialize a host_strided_batch_matrix.
+//! @param hA The host_strided_batch_matrix.
+//! @param arg Specifies the argument class.
+//! @param nan_init Initialize matrix with Nan's depending upon the rocblas_check_nan_init enum value.
+//! @param matrix_type Initialization of the matrix based upon the rocblas_check_matrix_type enum value.
+//! @param seedReset reset the seed if true, do not reset the seed otherwise. Use init_cos if seedReset is true else use init_sin.
+//! @param alternating_sign Initialize matrix so adjacent entries have alternating sign.
+//!
+template <typename T, bool altInit = false>
+inline void rocblas_init_matrix(host_strided_batch_matrix<T>& hA,
+                                const Arguments&              arg,
+                                rocblas_check_nan_init        nan_init,
+                                rocblas_check_matrix_type     matrix_type,
+                                bool                          seedReset        = false,
+                                bool                          alternating_sign = false)
+{
+    if(seedReset)
+        rocblas_seedrand();
+
+    if(nan_init == rocblas_client_alpha_sets_nan && rocblas_isnan(arg.alpha))
+    {
+        rocblas_init_matrix(matrix_type, arg.uplo, random_nan_generator<T>, hA);
+    }
+    else if(nan_init == rocblas_client_beta_sets_nan && rocblas_isnan(arg.beta))
+    {
+        rocblas_init_matrix(matrix_type, arg.uplo, random_nan_generator<T>, hA);
+    }
+    else if(arg.initialization == rocblas_initialization_random_narrow)
+    {
+        init_matrix<rocm_random_narrow_range, T>(hA);
+    }
+    else if(arg.initialization == rocblas_initialization_random_broad)
+    {
+        if(!altInit)
+            init_matrix<rocm_random_squareable, T>(hA);
+        else
+            init_matrix<rocm_random_addable, T>(hA);
+    }
+    else if(arg.initialization == rocblas_initialization_random_full)
+    {
+        init_matrix<rocm_random_full_range, T>(hA);
+    }
+    else if(arg.initialization == rocblas_initialization_const)
+    {
+        init_constant_matrix<T>(hA, T(arg.initVal));
+    }
+    else if(arg.initialization == rocblas_initialization_hpl)
+    {
+        if(alternating_sign)
+            rocblas_init_matrix_alternating_sign(
+                matrix_type, arg.uplo, random_hpl_generator<T>, hA);
+        else
+            rocblas_init_matrix(matrix_type, arg.uplo, random_hpl_generator<T>, hA);
+    }
+    else if(arg.initialization == rocblas_initialization_random_int)
+    {
+        if(alternating_sign)
+            rocblas_init_matrix_alternating_sign(matrix_type, arg.uplo, random_generator<T>, hA);
+        else
+            rocblas_init_matrix(matrix_type, arg.uplo, random_generator<T>, hA);
+    }
+    else if(arg.initialization == rocblas_initialization_trig_float)
+    {
+        rocblas_init_matrix_trig<T>(matrix_type, arg.uplo, hA, seedReset);
     }
     else
     {
-        for(size_t i = 0; i < batch; i++)
-        {
-            for(size_t j = 0; j < k; ++j)
-            {
-                T scal = T(0);
-                for(size_t k = 0; k < m; ++k)
-                {
-                    T val = T(rocblas_abs(a[i * stride_a + k * lda + j]));
-                    if(val > scal)
-                        scal = val;
-                }
-
-                if(!scal)
-                    abort();
-
-                scal = T(1) / scal;
-                if(transb == rocblas_operation_none)
-                    for(size_t k = 0; k < n; ++k)
-                        b[i * stride_b + j * ldb + k] *= scal;
-                else
-                    for(size_t k = 0; k < n; ++k)
-                        b[i * stride_b + k * ldb + j] *= scal;
-            }
-        }
+        rocblas_cerr << "unknown initialization type" << std::endl;
+        rocblas_abort();
     }
 }
 
-template <typename T, typename U = T, std::enable_if_t<!std::is_same<T, int8_t>{},int> = 0>
-static void init_broad_range_random_gemm(rocblas_operation transa,
-                                         rocblas_operation transb,
-                                         size_t            m,
-                                         size_t            n,
-                                         size_t            k,
-                                         std::vector<T>& a,
-                                         size_t lda,
-                                         rocblas_stride stride_a,
-                                         std::vector<T>& b,
-                                         size_t ldb,
-                                         rocblas_stride stride_b,
-                                         std::vector<U>& c,
-                                         size_t ldc,
-                                         rocblas_stride stride_c,
-                                         size_t batch = 1)
+//!
+//! @brief Initialize a host matrix.
+//! @param hA The host matrix.
+//! @param arg Specifies the argument class.
+//! @param nan_init Initialize matrix with Nan's depending upon the rocblas_check_nan_init enum value.
+//! @param matrix_type Initialization of the matrix based upon the rocblas_check_matrix_type enum value.
+//! @param alternating_sign Initialize matrix so adjacent entries have alternating sign.
+//!
+template <typename T, bool altInit = false>
+inline void rocblas_init_matrix(host_matrix<T>&           hA,
+                                const Arguments&          arg,
+                                rocblas_check_nan_init    nan_init,
+                                rocblas_check_matrix_type matrix_type,
+                                bool                      seedReset        = false,
+                                bool                      alternating_sign = false)
 {
-    init_matrix<rocm_random_squareable>(a, transa == rocblas_operation_none ? m : k, transa == rocblas_operation_none ? k : m, lda, stride_a, batch);
-    init_matrix<rocm_random_addable>(b, transb == rocblas_operation_none ? k : n, transb == rocblas_operation_none ? n : k, ldb, stride_b, batch);
-    init_matrix<rocm_random_addable>(c, m, n, ldc, stride_c, batch);
+    if(seedReset)
+        rocblas_seedrand();
 
-    normalizeInputs<T>(transa, transb, m, n, k, a, lda, stride_a, b, ldb, stride_b, batch);
-}
+    if(nan_init == rocblas_client_alpha_sets_nan && rocblas_isnan(arg.alpha))
+    {
+        rocblas_init_matrix(matrix_type, arg.uplo, random_nan_generator<T>, hA);
+    }
+    else if(nan_init == rocblas_client_beta_sets_nan && rocblas_isnan(arg.beta))
+    {
+        rocblas_init_matrix(matrix_type, arg.uplo, random_nan_generator<T>, hA);
+    }
+    else if(arg.initialization == rocblas_initialization_random_narrow)
+    {
+        init_matrix<rocm_random_narrow_range, T>(hA);
+    }
+    else if(arg.initialization == rocblas_initialization_random_broad)
+    {
+        if(!altInit)
+            init_matrix<rocm_random_squareable, T>(hA);
+        else
+            init_matrix<rocm_random_addable, T>(hA);
+    }
+    else if(arg.initialization == rocblas_initialization_random_full)
+    {
+        init_matrix<rocm_random_full_range, T>(hA);
+    }
+    else if(arg.initialization == rocblas_initialization_const)
+    {
+        init_constant_matrix<T>(hA, T(arg.initVal));
+    }
+    else if(arg.initialization == rocblas_initialization_hpl)
+    {
+        if(alternating_sign)
+            rocblas_init_matrix_alternating_sign(
+                matrix_type, arg.uplo, random_hpl_generator<T>, hA);
+        else
+            rocblas_init_matrix(matrix_type, arg.uplo, random_hpl_generator<T>, hA);
+    }
+    else if(arg.initialization == rocblas_initialization_random_int)
+    {
+        if(alternating_sign)
+            rocblas_init_matrix_alternating_sign(matrix_type, arg.uplo, random_generator<T>, hA);
+        else
+            rocblas_init_matrix(matrix_type, arg.uplo, random_generator<T>, hA);
+    }
+    else if(arg.initialization == rocblas_initialization_trig_float)
+    {
+        rocblas_init_matrix_trig<T>(matrix_type, arg.uplo, hA, seedReset);
+    }
+    else
+    {
+        rocblas_cerr << "unknown initialization type" << std::endl;
+        rocblas_abort();
+    }
 
-template <typename T, typename U = T, std::enable_if_t<std::is_same<T, int8_t>{},int> = 0>
-static void init_broad_range_random_gemm(rocblas_operation transa,
-                                         rocblas_operation transb,
-                                         size_t            m,
-                                         size_t            n,
-                                         size_t            k,
-                                         std::vector<T>& a,
-                                         size_t lda,
-                                         rocblas_stride stride_a,
-                                         std::vector<T>& b,
-                                         size_t ldb,
-                                         rocblas_stride stride_b,
-                                         std::vector<U>& c,
-                                         size_t ldc,
-                                         rocblas_stride stride_c,
-                                         size_t batch = 1)
-{
-    rocblas_cout << "Invalid init type for int8_t...exiting" << std::endl;
-    exit(1);
-}
-
-template <typename T, typename U = T, std::enable_if_t<!std::is_same<T, int8_t>{},int> = 0>
-static void init_narrow_range_random_gemm(rocblas_operation transa,
-                                          rocblas_operation transb,
-                                          size_t            m,
-                                          size_t            n,
-                                          size_t            k,
-                                          std::vector<T>& a,
-                                          size_t lda,
-                                          rocblas_stride stride_a,
-                                          std::vector<T>& b,
-                                          size_t ldb,
-                                          rocblas_stride stride_b,
-                                          std::vector<U>& c,
-                                          size_t ldc,
-                                          rocblas_stride stride_c,
-                                          size_t batch = 1)
-{
-    init_matrix<rocm_random_narrow_range>(a, transa == rocblas_operation_none ? m : k, transa == rocblas_operation_none ? k : m, lda, stride_a, batch);
-    init_matrix<rocm_random_narrow_range>(b, transb == rocblas_operation_none ? k : n, transb == rocblas_operation_none ? n : k, ldb, stride_b, batch);
-    init_matrix<rocm_random_narrow_range>(c, m, n, ldc, stride_c, batch);
-}
-
-template <typename T, typename U = T, std::enable_if_t<std::is_same<T, int8_t>{},int> = 0>
-static void init_narrow_range_random_gemm(rocblas_operation transa,
-                                          rocblas_operation transb,
-                                          size_t            m,
-                                          size_t            n,
-                                          size_t            k,
-                                          std::vector<T>& a,
-                                          size_t lda,
-                                          rocblas_stride stride_a,
-                                          std::vector<T>& b,
-                                          size_t ldb,
-                                          rocblas_stride stride_b,
-                                          std::vector<U>& c,
-                                          size_t ldc,
-                                          rocblas_stride stride_c,
-                                          size_t batch = 1)
-{
-    rocblas_cout << "Invalid init type for int8_t...exiting" << std::endl;
-    exit(1);
-}
-
-//can cause nans from overflow
-template <typename T, typename U = T, std::enable_if_t<!std::is_same<T, int8_t>{},int> = 0>
-static void init_full_range_random_gemm(rocblas_operation transa,
-                                        rocblas_operation transb,
-                                        size_t            m,
-                                        size_t            n,
-                                        size_t            k,
-                                        std::vector<T>& a,
-                                        size_t lda,
-                                        rocblas_stride stride_a,
-                                        std::vector<T>& b,
-                                        size_t ldb,
-                                        rocblas_stride stride_b,
-                                        std::vector<U>& c,
-                                        size_t ldc,
-                                        rocblas_stride stride_c,
-                                        size_t batch = 1)
-{
-    init_matrix<rocm_random_full_range>(a, transa == rocblas_operation_none ? m : k, transa == rocblas_operation_none ? k : m, lda, stride_a, batch);
-    init_matrix<rocm_random_full_range>(b, transb == rocblas_operation_none ? k : n, transb == rocblas_operation_none ? n : k, ldb, stride_b, batch);
-    init_matrix<rocm_random_full_range>(c, m, n, ldc, stride_c, batch);
-}
-
-//can cause nans from overflow
-template <typename T, typename U = T, std::enable_if_t<std::is_same<T, int8_t>{},int> = 0>
-static void init_full_range_random_gemm(rocblas_operation transa,
-                                        rocblas_operation transb,
-                                        size_t            m,
-                                        size_t            n,
-                                        size_t            k,
-                                        std::vector<T>& a,
-                                        size_t lda,
-                                        rocblas_stride stride_a,
-                                        std::vector<T>& b,
-                                        size_t ldb,
-                                        rocblas_stride stride_b,
-                                        std::vector<U>& c,
-                                        size_t ldc,
-                                        rocblas_stride stride_c,
-                                        size_t batch = 1)
-{
-    rocblas_cout << "Invalid init type for int8_t...exiting" << std::endl;
-    exit(1);
-}
-
-template <typename T, typename U = T>
-static void init_constant_gemm(rocblas_operation transa,
-                               rocblas_operation transb,
-                               size_t            m,
-                               size_t            n,
-                               size_t            k,
-                               std::vector<T>& a,
-                               size_t lda,
-                               rocblas_stride stride_a,
-                               std::vector<T>& b,
-                               size_t ldb,
-                               rocblas_stride stride_b,
-                               std::vector<U>& c,
-                               size_t ldc,
-                               rocblas_stride stride_c,
-                               T      val,
-                               size_t batch = 1)
-{
-    init_constant_matrix<T>(a, transa == rocblas_operation_none ? m : k, transa == rocblas_operation_none ? k : m, lda, stride_a, batch, val);
-    init_constant_matrix<T>(b, transb == rocblas_operation_none ? k : n, transb == rocblas_operation_none ? n : k, ldb, stride_b, batch, val);
-    init_constant_matrix<U>(c, m, n, ldc, stride_c, batch, U(val));
 }
 
 #endif /* _UTILITY_ */
