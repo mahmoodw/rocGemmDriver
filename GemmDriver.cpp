@@ -85,13 +85,13 @@ void BenchGemmStridedBatched(const Arguments& arg, std::promise<std::pair<double
     bool vChecks = (arg.unit_check || arg.norm_check);
     bool transferOutput = (vChecks || storeOutputData);
 
-    static host_strided_batch_matrix<T> hA(A_row, A_col, lda, stride_a, batch_count);
-    static host_strided_batch_matrix<T> hB(B_row, B_col, ldb, stride_b, batch_count);
+    host_strided_batch_matrix<T> hA(A_row, A_col, lda, stride_a, batch_count);
+    host_strided_batch_matrix<T> hB(B_row, B_col, ldb, stride_b, batch_count);
     host_strided_batch_matrix<T> hC(M, N, ldc, stride_c, batch_count);
 
-    static host_strided_batch_matrix<T> hC_orig = (arg.reinit_c) ? host_strided_batch_matrix<T>(M, N, ldc, stride_c, batch_count)
+    host_strided_batch_matrix<T> hC_orig = (arg.reinit_c) ? host_strided_batch_matrix<T>(M, N, ldc, stride_c, batch_count)
                            : host_strided_batch_matrix<T>(0, 1, 1, 1, 1);
-    static host_strided_batch_matrix<T> hC_gold = (vChecks) ? host_strided_batch_matrix<T>(M, N, ldc, stride_c, batch_count)
+    host_strided_batch_matrix<T> hC_gold = (vChecks) ? host_strided_batch_matrix<T>(M, N, ldc, stride_c, batch_count)
                            : host_strided_batch_matrix<T>(0, 1, 1, 1, 1);
 
     // Check host memory allocation
@@ -477,6 +477,22 @@ void BenchGemmEx(Arguments& arg, std::promise<std::pair<double,double>> promise)
         d_type = arg.c_type;
     }
 
+    // Information on flush_memory_size and flush_batch_count
+    // - To time gemm_ex it is called number_hot_calls times.
+    // - if the size of dA, dB, dC, dD are small enough they will be cached
+    //   and reused number_hot_calls-1 times.
+    // - This "hot-cache" timing will give higher performance than if the
+    //   cache is flushed
+    // - arg.flush_batch_count or arg.flush_memory_size can be used to avoid caching of dA, dB, dC, dD
+    // - if arg.flush_memory_size is specified, then flush_batch_count is calculated
+    // - only one of arg.flush_memory_size or arg.flush_batch_count can be used, not both
+    // - Note that this is only used in timing code, not in testing code.
+    // - The method is as outlined in
+    //   "Achieving accurate and context-sensitive timing for code optimization" by Whaley and Castaldo.
+    // - In the number_hot_calls timing loop it cycles through the arg.flush_batch_count copies
+    //   of dA, dB, dC, dD, and if flush_memory_size is large enough they will be evicted
+    //   from cache before they are reused.
+    // - The individual matrices are aligned on the same byte boundaries provided by hipMalloc.
     rocblas_stride stride_a = size_t(lda) * A_col;
     rocblas_stride stride_b = size_t(ldb) * B_col;
     rocblas_stride stride_c = size_t(ldc) * N;
@@ -487,31 +503,31 @@ void BenchGemmEx(Arguments& arg, std::promise<std::pair<double,double>> promise)
     rocblas_stride aligned_stride_c = align_stride<To>(stride_c);
     rocblas_stride aligned_stride_d = align_stride<To>(stride_d);
 
-    // size_t flush_batch_count = 1;
-    // if(arg.timing)
-    // {
-        // size_t a_size = M * K * sizeof(Ti);
-        // size_t b_size = K * N * sizeof(Ti);
-        // size_t c_size = M * N * sizeof(To);
-        // //      exclude d_size from cached_size calculation because
-        // //      - for arg.outofplace == false : D == C
-        // //      - for arg.outofplace == true  : D is write only
-        // size_t a_b_c_cached_size = a_size + b_size + c_size;
+    size_t flush_batch_count = 1;
+    if(arg.timing)
+    {
+        size_t a_size = M * K * sizeof(Ti);
+        size_t b_size = K * N * sizeof(Ti);
+        size_t c_size = M * N * sizeof(To);
+        //      exclude d_size from cached_size calculation because
+        //      - for arg.outofplace == false : D == C
+        //      - for arg.outofplace == true  : D is write only
+        size_t a_b_c_cached_size = a_size + b_size + c_size;
 
-        // flush_batch_count = calculate_flush_batch_count(
-        //     arg.flush_batch_count, arg.flush_memory_size, a_b_c_cached_size);
-    // }
+        flush_batch_count = calculate_flush_batch_count(
+            arg.flush_batch_count, arg.flush_memory_size, a_b_c_cached_size);
+    }
 
     bool vChecks = (arg.unit_check || arg.norm_check);
     bool transferOutput = (vChecks || storeOutputData);
 
     // Allocate host memory
-    static host_matrix<Ti> hA(A_row, A_col, lda);
-    static host_matrix<Ti> hB(B_row, B_col, ldb);
-    static host_matrix<To> hC(M, N, ldc);
+    host_matrix<Ti> hA(A_row, A_col, lda);
+    host_matrix<Ti> hB(B_row, B_col, ldb);
+    host_matrix<To> hC(M, N, ldc);
 
     host_matrix<To> hD      =  transferOutput ? host_matrix<To>(M, N, ldd) : host_matrix<To>(0, 1, 1);
-    static host_matrix<To> hD_gold =  vChecks ? host_matrix<To>(M, N, ldd) : host_matrix<To>(0, 1, 1);
+    host_matrix<To> hD_gold =  vChecks ? host_matrix<To>(M, N, ldd) : host_matrix<To>(0, 1, 1);
 
     // Check host memory allocation
     CHECK_HIP_ERROR(hA.memcheck());
@@ -519,9 +535,9 @@ void BenchGemmEx(Arguments& arg, std::promise<std::pair<double,double>> promise)
     CHECK_HIP_ERROR(hC.memcheck());
 
     // allocate memory on device
-    device_strided_batch_matrix<Ti> dA(A_row, A_col, lda, aligned_stride_a, 1);
-    device_strided_batch_matrix<Ti> dB(B_row, B_col, ldb, aligned_stride_b, 1);
-    device_strided_batch_matrix<To> dC(M, N, ldc, aligned_stride_c, 1);
+    device_strided_batch_matrix<Ti> dA(A_row, A_col, lda, aligned_stride_a, flush_batch_count);
+    device_strided_batch_matrix<Ti> dB(B_row, B_col, ldb, aligned_stride_b, flush_batch_count);
+    device_strided_batch_matrix<To> dC(M, N, ldc, aligned_stride_c, flush_batch_count);
     // if C!=D, allocate C and D normally
     // if C==D, allocate C big enough for the larger of C and D; D points to C
     device_strided_batch_matrix<To> dD_alloc
@@ -573,8 +589,6 @@ void BenchGemmEx(Arguments& arg, std::promise<std::pair<double,double>> promise)
     {
         storeInitToBin<Ti,To>(hA, a_file, hB, b_file, hC, c_file);
     }
-
-    // copy data from CPU to device
 
     // copy data from CPU to device
     CHECK_HIP_ERROR(dA.broadcast_one_matrix_from(hA));
@@ -762,6 +776,7 @@ void BenchGemmEx(Arguments& arg, std::promise<std::pair<double,double>> promise)
     {
         for(int i = 0; i < number_hot_calls; i++)
         {
+            int flush_index = (i + 1) % flush_batch_count;
             if(reinit_c && ((arg.norm_check && i == 0) || i > 0))
                 CHECK_HIP_ERROR(dC.broadcast_one_matrix_from(hC));
             if(arg.flush_gpu_cache)
@@ -777,17 +792,17 @@ void BenchGemmEx(Arguments& arg, std::promise<std::pair<double,double>> promise)
                             N,
                             K,
                             &h_alpha_Tc,
-                            dA[0],
+                            dA[flush_index],
                             arg.a_type,
                             lda,
-                            dB[0],
+                            dB[flush_index],
                             arg.b_type,
                             ldb,
                             &h_beta_Tc,
-                            dC[0],
+                            dC[flush_index],
                             arg.c_type,
                             ldc,
-                            dD[0],
+                            dD[arg.c_equals_d ? flush_index : 0],
                             d_type,
                             ldd,
                             arg.compute_type,
@@ -814,6 +829,7 @@ void BenchGemmEx(Arguments& arg, std::promise<std::pair<double,double>> promise)
         CHECK_HIP_ERROR(hipEventRecord(start[numEvents-1], NULL));
         for(int i = 0; i < number_hot_calls; i++)
         {
+            int flush_index = (i + 1) % flush_batch_count;
             ROCBLAS_INVOKE_START_STOP_EVENTS(handle, tensile_timing ? start[i]: nullptr, tensile_timing ? stop[i] : nullptr,
             rocblas_gemm_ex(handle,
                             transA,
@@ -822,17 +838,17 @@ void BenchGemmEx(Arguments& arg, std::promise<std::pair<double,double>> promise)
                             N,
                             K,
                             &h_alpha_Tc,
-                            dA[0],
+                            dA[flush_index],
                             arg.a_type,
                             lda,
-                            dB[0],
+                            dB[flush_index],
                             arg.b_type,
                             ldb,
                             &h_beta_Tc,
-                            dC[0],
+                            dC[flush_index],
                             arg.c_type,
                             ldc,
-                            dD[0],
+                            dD[arg.c_equals_d ? flush_index : 0],
                             d_type,
                             ldd,
                             arg.compute_type,
@@ -973,12 +989,12 @@ void BenchGemm(Arguments& arg, std::promise<std::pair<double,double>> promise)
     bool transferOutput = (vChecks || storeOutputData);
 
     // Naming: dX is in GPU (device) memory. hK is in CPU (host) memory
-    static host_matrix<T> hA(A_row, A_col, lda);
-    static host_matrix<T> hB(B_row, B_col, ldb);
+    host_matrix<T> hA(A_row, A_col, lda);
+    host_matrix<T> hB(B_row, B_col, ldb);
     host_matrix<T> hC(M, N, ldc);
-    static host_matrix<T> hC_gold = (vChecks) ? host_matrix<T>(M, N, ldc)
+    host_matrix<T> hC_gold = (vChecks) ? host_matrix<T>(M, N, ldc)
                             : host_matrix<T>(0, 0, 0);
-    static host_matrix<T> hC_orig = (arg.reinit_c) ? host_matrix<T>(M, N, ldc)
+    host_matrix<T> hC_orig = (arg.reinit_c) ? host_matrix<T>(M, N, ldc)
                             : host_matrix<T>(0, 0, 0);
 
     // Initial Data on CPU
@@ -1210,7 +1226,9 @@ void BenchGemm(Arguments& arg, std::promise<std::pair<double,double>> promise)
 
 int launch_bench(Arguments& arg, std::promise<std::pair<double,double>> promise)
 {
-    if(function == "gemm")
+    // rocblas_cout<<"function "<<function<<" precision "<<precision<<" a_type "<<a_type<<" b_type "<<b_type<<
+    // " c_type "<<c_type<<" d_type "<<d_type<<" compute_type "<<compute_type<<std::endl;
+    if(function == "gemm" || function == "rocblas_gemm")
     {
         if(precision == "f32_r" || precision == "s")
         {
@@ -1230,7 +1248,7 @@ int launch_bench(Arguments& arg, std::promise<std::pair<double,double>> promise)
             return rocblas_status_not_implemented;
         }
     }
-    else if(function == "gemm_strided_batched")
+    else if(function == "gemm_strided_batched" || function == "rocblas_gemm_strided_batched")
     {
         if(precision == "f32_r" || precision == "s")
         {
@@ -1250,7 +1268,7 @@ int launch_bench(Arguments& arg, std::promise<std::pair<double,double>> promise)
             return rocblas_status_not_implemented;
         }
     }
-    else if(function == "gemm_ex")
+    else if(function == "gemm_ex" || function == "rocblas_gemm_ex")
     {
         if((a_type == "f64_r" || a_type == "d") && (b_type == "f64_r" || b_type == "d")
            && (c_type == "f64_r" || c_type == "d") && (d_type == "f64_r" || d_type == "d")
@@ -1310,12 +1328,8 @@ int launch_bench(Arguments& arg, std::promise<std::pair<double,double>> promise)
     return 0;
 }
 
-int main(int argc, char* argv[])
+int main2(Arguments& arg)
 {
-
-    Arguments arg;
-    readArgs(argc, argv, arg);
-
     if(arg.norm_check || arg.unit_check)
     {
 #ifdef VALIDATE
@@ -1393,6 +1407,38 @@ int main(int argc, char* argv[])
         return launch_bench(arg, std::move(promise[0]));
     }
 
+
+    return 0;
+}
+
+int main(int argc, char* argv[])
+{
+    bool      datafile            = rocblas_parse_data(argc, argv);
+
+    int ret = 0;
+    if(datafile)
+    {
+        int i = 0;
+        rocblas_cout<<"yaml"<<std::endl;
+        for(Arguments arg : RocBLAS_TestData())
+        {
+            rocblas_cout<<"i "<<i<<std::endl;
+            // ret |= run_bench_test(true, arg, filter, name_filter, any_stride, true);
+            checkArgs(arg, true);
+            main2(arg);
+            i++;
+            // rocblas_cout<<"function "<<arg.function<<std::endl;
+        }
+    }
+    else
+    {
+        Arguments arg;
+        readArgs(argc, argv, arg);
+        rocblas_cout<<"normal"<<std::endl;
+        main2(arg);
+    }
+
+    test_cleanup::cleanup();
 
     return 0;
 }

@@ -41,6 +41,17 @@
 
 #include <boost/program_options.hpp>
 namespace po = boost::program_options;
+#include <stack>
+
+#if __has_include(<filesystem>)
+#include <filesystem>
+namespace fs = std::filesystem;
+#elif __has_include(<experimental/filesystem>)
+#include <experimental/filesystem>
+namespace fs = std::experimental::filesystem;
+#else
+#error no filesystem found
+#endif
 
 // clang-format off
 // return letter N,T,C in place of rocblas_operation enum
@@ -2419,6 +2430,20 @@ private:
 
 struct Arguments
 {
+    char function[64];
+    char name[64];
+    // char category[32];
+
+    double alpha;
+    double alphai;
+    double beta;
+    double betai;
+
+    rocblas_stride stride_a; //  stride_a > transA == 'N' ? lda * K : lda * M
+    rocblas_stride stride_b; //  stride_b > transB == 'N' ? ldb * N : ldb * K
+    rocblas_stride stride_c; //  stride_c > ldc * N
+    rocblas_stride stride_d; //  stride_d > ldd * N 
+
     rocblas_int M;
     rocblas_int N;
     rocblas_int K;
@@ -2428,21 +2453,25 @@ struct Arguments
     rocblas_int ldc;
     rocblas_int ldd;
 
+    rocblas_int batch_count;
+
+    rocblas_int iters;
+    rocblas_int cold_iters;
+
+    uint32_t algo;
+    int32_t  solution_index;
+    rocblas_gemm_flags flags;
+
     rocblas_datatype a_type;
     rocblas_datatype b_type;
     rocblas_datatype c_type;
     rocblas_datatype d_type;
     rocblas_datatype compute_type;
 
-    rocblas_int incx;
-    rocblas_int incy;
-    rocblas_int incd;
-    rocblas_int incb;
-
-    double alpha;
-    double alphai;
-    double beta;
-    double betai;
+    rocblas_initialization initialization;
+    rocblas_int norm_check;
+    rocblas_int unit_check;
+    rocblas_int timing;
 
     char transA;
     char transB;
@@ -2450,34 +2479,15 @@ struct Arguments
     char uplo;
     char diag;
 
-    rocblas_int batch_count;
-
-    rocblas_stride stride_a; //  stride_a > transA == 'N' ? lda * K : lda * M
-    rocblas_stride stride_b; //  stride_b > transB == 'N' ? ldb * N : ldb * K
-    rocblas_stride stride_c; //  stride_c > ldc * N
-    rocblas_stride stride_d; //  stride_d > ldd * N
-
     double initVal;
 
-    rocblas_int norm_check;
-    rocblas_int unit_check;
-    rocblas_int timing;
-    rocblas_int iters;
+    rocblas_int c_equals_d;
     rocblas_int reinit_c;
     rocblas_int flush_gpu_cache;
-    rocblas_int c_equals_d;
     rocblas_int time_each_iter;
     rocblas_int tensile_timing;
-
-    uint32_t algo;
-    int32_t  solution_index;
-    uint32_t flags;
-
-    char function[64];
-    char name[64];
-    char category[32];
-
-    rocblas_initialization initialization;
+    uint64_t    flush_batch_count   = 1;
+    uint64_t    flush_memory_size   = 0;
 
     // Validate input format.
     // rocblas_gentest.py is expected to conform to this format.
@@ -2516,6 +2526,17 @@ struct Arguments
 #define ROCBLAS_FORMAT_CHECK(x) check_func(arg.x, #x)
 
         // Order is important
+        ROCBLAS_FORMAT_CHECK(function);
+        ROCBLAS_FORMAT_CHECK(name);
+        // ROCBLAS_FORMAT_CHECK(category);
+        ROCBLAS_FORMAT_CHECK(alpha);
+        ROCBLAS_FORMAT_CHECK(alphai);
+        ROCBLAS_FORMAT_CHECK(beta);
+        ROCBLAS_FORMAT_CHECK(betai);
+        ROCBLAS_FORMAT_CHECK(stride_a);
+        ROCBLAS_FORMAT_CHECK(stride_b);
+        ROCBLAS_FORMAT_CHECK(stride_c);
+        ROCBLAS_FORMAT_CHECK(stride_d);
         ROCBLAS_FORMAT_CHECK(M);
         ROCBLAS_FORMAT_CHECK(N);
         ROCBLAS_FORMAT_CHECK(K);
@@ -2523,46 +2544,34 @@ struct Arguments
         ROCBLAS_FORMAT_CHECK(ldb);
         ROCBLAS_FORMAT_CHECK(ldc);
         ROCBLAS_FORMAT_CHECK(ldd);
+        ROCBLAS_FORMAT_CHECK(batch_count);
+        ROCBLAS_FORMAT_CHECK(iters);
+        ROCBLAS_FORMAT_CHECK(cold_iters);
+        ROCBLAS_FORMAT_CHECK(algo);
+        ROCBLAS_FORMAT_CHECK(solution_index);
+        ROCBLAS_FORMAT_CHECK(flags);
         ROCBLAS_FORMAT_CHECK(a_type);
         ROCBLAS_FORMAT_CHECK(b_type);
         ROCBLAS_FORMAT_CHECK(c_type);
         ROCBLAS_FORMAT_CHECK(d_type);
-        ROCBLAS_FORMAT_CHECK(initVal);
         ROCBLAS_FORMAT_CHECK(compute_type);
-        ROCBLAS_FORMAT_CHECK(incx);
-        ROCBLAS_FORMAT_CHECK(incy);
-        ROCBLAS_FORMAT_CHECK(incd);
-        ROCBLAS_FORMAT_CHECK(incb);
-        ROCBLAS_FORMAT_CHECK(alpha);
-        ROCBLAS_FORMAT_CHECK(alphai);
-        ROCBLAS_FORMAT_CHECK(beta);
-        ROCBLAS_FORMAT_CHECK(betai);
+        ROCBLAS_FORMAT_CHECK(initialization);
+        ROCBLAS_FORMAT_CHECK(norm_check);
+        ROCBLAS_FORMAT_CHECK(unit_check);
+        ROCBLAS_FORMAT_CHECK(timing);
         ROCBLAS_FORMAT_CHECK(transA);
         ROCBLAS_FORMAT_CHECK(transB);
         ROCBLAS_FORMAT_CHECK(side);
         ROCBLAS_FORMAT_CHECK(uplo);
         ROCBLAS_FORMAT_CHECK(diag);
-        ROCBLAS_FORMAT_CHECK(batch_count);
-        ROCBLAS_FORMAT_CHECK(stride_a);
-        ROCBLAS_FORMAT_CHECK(stride_b);
-        ROCBLAS_FORMAT_CHECK(stride_c);
-        ROCBLAS_FORMAT_CHECK(stride_d);
-        ROCBLAS_FORMAT_CHECK(norm_check);
-        ROCBLAS_FORMAT_CHECK(unit_check);
-        ROCBLAS_FORMAT_CHECK(timing);
-        ROCBLAS_FORMAT_CHECK(iters);
+        ROCBLAS_FORMAT_CHECK(initVal);
+        ROCBLAS_FORMAT_CHECK(c_equals_d);
         ROCBLAS_FORMAT_CHECK(reinit_c);
         ROCBLAS_FORMAT_CHECK(flush_gpu_cache);
-        ROCBLAS_FORMAT_CHECK(c_equals_d);
         ROCBLAS_FORMAT_CHECK(time_each_iter);
         ROCBLAS_FORMAT_CHECK(tensile_timing);
-        ROCBLAS_FORMAT_CHECK(algo);
-        ROCBLAS_FORMAT_CHECK(solution_index);
-        ROCBLAS_FORMAT_CHECK(flags);
-        ROCBLAS_FORMAT_CHECK(function);
-        ROCBLAS_FORMAT_CHECK(name);
-        ROCBLAS_FORMAT_CHECK(category);
-        ROCBLAS_FORMAT_CHECK(initialization);
+        ROCBLAS_FORMAT_CHECK(flush_batch_count);
+        ROCBLAS_FORMAT_CHECK(flush_memory_size);
     }
 
     template <typename T>
@@ -2673,10 +2682,6 @@ private:
         print("ldb", arg.ldb);
         print("ldc", arg.ldc);
         print("ldd", arg.ldd);
-        print("incx", arg.incx);
-        print("incy", arg.incy);
-        print("incd", arg.incd);
-        print("incb", arg.incb);
         print("alpha", arg.alpha);
         print("alphai", arg.alphai);
         print("beta", arg.beta);
@@ -2694,7 +2699,7 @@ private:
         print("solution_index", arg.solution_index);
         print("flags", arg.flags);
         print("name", arg.name);
-        print("category", arg.category);
+        // print("category", arg.category);
         print("norm_check", arg.norm_check);
         print("unit_check", arg.unit_check);
         print("timing", arg.timing);
@@ -2705,10 +2710,322 @@ private:
         print("time_each_iter", arg.time_each_iter);
         print("tensile_timing", arg.tensile_timing);
         print("initialization", arg.initialization);
+        print("flush_batch_count", arg.flush_batch_count);
+        print("flush_memory_size", arg.flush_memory_size);        
 
         return str << " }\n";
     }
 };
+
+/* ============================================================================================ */
+// Return path of this executable
+std::string rocblas_exepath()
+{
+#ifdef WIN32
+    // for now not building with wide chars
+    // wchar_t wpath[MAX_PATH + 1] = {0};
+    // GetModuleFileNameW(NULL, wpath, MAX_PATH + 1);
+    // std::vector<wchar_t> result(MAX_PATH + 1);
+
+    std::vector<TCHAR> result(MAX_PATH + 1);
+    // Ensure result is large enough to accommodate the path
+    DWORD length = 0;
+    for(;;)
+    {
+        length = GetModuleFileNameA(nullptr, result.data(), result.size());
+        if(length < result.size() - 1)
+        {
+            result.resize(length + 1);
+            break;
+        }
+        result.resize(result.size() * 2);
+    }
+
+    // std::wstring          wspath(result.data());
+    // fs::path exepath(wspath.begin(), wspath.end());
+
+    fs::path exepath(result.begin(), result.end());
+    exepath = exepath.remove_filename();
+    // Add trailing "/" to exepath if required
+    exepath += exepath.empty() ? "" : "/";
+    return exepath.string();
+#else
+    std::string pathstr;
+    char*       path = realpath("/proc/self/exe", 0);
+    if(path)
+    {
+        char* p = strrchr(path, '/');
+        if(p)
+        {
+            p[1]    = 0;
+            pathstr = path;
+        }
+        free(path);
+    }
+    return pathstr;
+#endif
+}
+
+/* ============================================================================================ */
+// Temp directory rooted random path
+std::string rocblas_tempname()
+{
+#ifdef WIN32
+    // Generate "/tmp/rocblas-XXXXXX" like file name
+    const std::string alphanum     = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuv";
+    int               stringlength = alphanum.length() - 1;
+    std::string       uniquestr    = "rocblas-";
+
+    for(auto n : {0, 1, 2, 3, 4, 5})
+        uniquestr += alphanum.at(rand() % stringlength);
+
+    fs::path tmpname = fs::temp_directory_path() / uniquestr;
+
+    return tmpname.string();
+#else
+    char tmp[] = "/tmp/rocblas-XXXXXX";
+    int  fd    = mkostemp(tmp, O_CLOEXEC);
+    if(fd == -1)
+    {
+        dprintf(STDERR_FILENO, "Cannot open temporary file: %m\n");
+        exit(EXIT_FAILURE);
+    }
+
+    return std::string(tmp);
+#endif
+}
+
+// Parse YAML data
+static std::string rocblas_parse_yaml(const std::string& yaml)
+{
+    std::string tmp     = rocblas_tempname();
+    auto        exepath = rocblas_exepath();
+    auto cmd = exepath + "rocblas_gentest.py --template " + exepath + "rocblas_template.yaml -o "
+               + tmp + " " + yaml;
+    rocblas_cerr << cmd << std::endl;
+
+#ifdef WIN32
+    int status = std::system(cmd.c_str());
+    if(status == -1)
+        exit(EXIT_FAILURE);
+#else
+    int status = system(cmd.c_str());
+    if(status == -1 || !WIFEXITED(status) || WEXITSTATUS(status))
+        exit(EXIT_FAILURE);
+#endif
+
+    return tmp;
+}
+
+/*! \brief  Test cleanup handler. Frees memory or performs other cleanup at
+specified points in program. */
+
+class test_cleanup
+{
+    static auto& stack()
+    {
+        // Placed inside function to avoid dependency on initialization order
+        static std::stack<std::function<void()>> stack;
+        return stack;
+    }
+
+public:
+    // Run all cleanup handlers pushed so far, in LIFO order
+    static void cleanup()
+    {
+        while(!stack().empty())
+        {
+            stack().top()();
+            stack().pop();
+        }
+    }
+
+    // Create an object and register a cleanup handler
+    template <typename T, typename... Args>
+    static T* allocate(T** ptr, Args&&... args)
+    {
+        *ptr = nullptr;
+        stack().push([=] {
+            delete *ptr;
+            *ptr = nullptr;
+        });
+        return new T(std::forward<Args>(args)...);
+    }
+};
+
+// Class used to read Arguments data into the tests
+class RocBLAS_TestData
+{
+    // data filename
+    static auto& filename()
+    {
+        static std::string filename
+            = "(Uninitialized data. RocBLAS_TestData::set_filename needs to be called first.)";
+        return filename;
+    }
+
+    // filter iterator
+    class iterator : public std::istream_iterator<Arguments>
+    {
+        bool (*const filter)(const Arguments&) = nullptr;
+
+        // Skip entries for which validate or filter returns false
+        void skip_filter()
+        {
+            static auto endIter = std::istream_iterator<Arguments>{};
+
+            // // warning we may update the Arguments in validate, thus the const_cast
+            // while(*this != endIter && !(const_cast<Arguments&>(**this).validate()))
+            //     ++*static_cast<std::istream_iterator<Arguments>*>(this);
+
+            if(filter)
+                while(*this != endIter && !filter(**this))
+                    ++*static_cast<std::istream_iterator<Arguments>*>(this);
+        }
+
+    public:
+        // Constructor takes a filter and iterator
+        iterator(bool filter(const Arguments&), std::istream_iterator<Arguments> iter)
+            : std::istream_iterator<Arguments>(iter)
+            , filter(filter)
+        {
+            skip_filter();
+        }
+
+        // Default end iterator and nullptr filter
+        iterator() = default;
+
+        // Preincrement iterator operator with filtering
+        iterator& operator++()
+        {
+            ++*static_cast<std::istream_iterator<Arguments>*>(this);
+            skip_filter();
+            return *this;
+        }
+
+        // We do not need a postincrement iterator operator
+        // We delete it here so that the base class's isn't silently called
+        // To implement it, use "auto old = *this; ++*this; return old;"
+        iterator operator++(int) = delete;
+    };
+
+public:
+    // Initialize filename, optionally removing it at exit
+    static void set_filename(std::string name, bool remove_atexit = false)
+    { 
+        RocBLAS_TestData::filename() = std::move(name);
+
+        if(remove_atexit)
+        {
+            auto cleanup = [] { fs::remove(filename().c_str()); };
+            atexit(cleanup);
+            at_quick_exit(cleanup);
+        }
+    }
+
+    // begin() iterator which accepts an optional filter.
+    static iterator begin(bool filter(const Arguments&) = nullptr)
+    {
+        static std::ifstream* ifs = nullptr;
+
+        // If this is the first time, or after test_cleanup::cleanup() has been called
+        if(!ifs)
+        {
+            std::string fileToOpen = filename();
+            // Allocate a std::ifstream and register it to be deleted during cleanup
+            ifs = test_cleanup::allocate(
+                &ifs, fileToOpen, std::ifstream::in | std::ifstream::binary);
+            if(!ifs || ifs->fail())
+            {
+                rocblas_cerr << "Cannot open " << fileToOpen << ": " << strerror(errno)
+                             << std::endl;
+                exit(EXIT_FAILURE);
+            }
+        }
+
+        // We re-seek the file back to position 0
+        ifs->clear();
+        ifs->seekg(0);
+
+        // Validate the data file format
+        Arguments::validate(*ifs);
+
+        // We create a filter iterator which will choose only the test cases we want right now.
+        // This is to preserve Gtest structure while not creating no-op tests which "always pass".
+        return iterator(filter, std::istream_iterator<Arguments>(*ifs));
+    }
+
+    // end() iterator
+    static iterator end()
+    {
+        return {};
+    }
+};
+
+// Parse --data and --yaml command-line arguments
+bool rocblas_parse_data(int& argc, char** argv, const std::string& default_file = "")
+{
+    std::string filename;
+    char**      argv_p = argv + 1;
+    bool        help = false, yaml = false;
+
+    // Scan, process and remove any --yaml or --data options
+    for(int i = 1; argv[i]; ++i)
+    {
+        if(!strcmp(argv[i], "--data") || !strcmp(argv[i], "--yaml"))
+        {
+            if(!strcmp(argv[i], "--yaml"))
+            {
+                yaml = true;
+            }
+
+            if(filename != "")
+            {
+                rocblas_cerr << "Only one of the --yaml and --data options may be specified"
+                             << std::endl;
+                exit(EXIT_FAILURE);
+            }
+
+            if(!argv[i + 1] || !argv[i + 1][0])
+            {
+                rocblas_cerr << "The " << argv[i] << " option requires an argument" << std::endl;
+                exit(EXIT_FAILURE);
+            }
+            filename = argv[++i];
+        }
+        else
+        {
+            *argv_p++ = argv[i];
+            if(!help && (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")))
+            {
+                help = true;
+                rocblas_cout << "\n"
+                             << argv[0] << " [ --yaml <path> ] <options> ...\n"
+                             << std::endl;
+            }
+        }
+    }
+
+    // argc and argv contain remaining options and non-option arguments
+    *argv_p = nullptr;
+    argc    = argv_p - argv;
+
+    if(filename == "-")
+        filename = "/dev/stdin";
+    else if(filename == "")
+        filename = default_file;
+
+    if(yaml)
+        filename = rocblas_parse_yaml(filename);
+
+    if(filename != "")
+    {
+        RocBLAS_TestData::set_filename(filename, yaml);
+        return true;
+    }
+
+    return false;
+}
 
 static_assert(std::is_standard_layout<Arguments> {},
               "Arguments is not a standard layout type, and thus is incompatible with C.");
@@ -2727,11 +3044,12 @@ std::string initialization;
 std::string a_file, b_file, c_file, o_file;
 rocblas_int storeInitData;
 rocblas_int storeOutputData;
-rocblas_int device_id;
-rocblas_int multi_device;
+rocblas_int device_id = 0;
+rocblas_int multi_device = 1;
 Barrier perfBarrier;
 Barrier memBarrier;
 Barrier memBarrier2;
+int32_t     flags= 0;
 
 template <typename T>
 inline rocblas_stride align_stride(rocblas_stride stride)
@@ -3528,6 +3846,181 @@ internal_ostream& operator<<(internal_ostream&           os,
     return os;
 }
 
+template <typename...>
+using void_t = void;
+
+// If gcnArchName not present, return empty string
+template <typename PROP, typename = void>
+struct ArchName
+{
+    std::string operator()(const PROP& prop) const
+    {
+        return "";
+    }
+};
+
+// If gcnArchName exists as a member, use it instead
+template <typename PROP>
+struct ArchName<PROP, void_t<decltype(PROP::gcnArchName)>>
+{
+    std::string operator()(const PROP& prop) const
+    {
+        // strip out xnack/ecc from name
+        std::string gcnArchName(prop.gcnArchName);
+        std::string gcnArch = gcnArchName.substr(0, gcnArchName.find(":"));
+        return gcnArch;
+    }
+};
+
+// exported. Get architecture name
+std::string rocblas_internal_get_arch_name()
+{
+    int deviceId;
+    CHECK_HIP_ERROR(hipGetDevice(&deviceId));
+    hipDeviceProp_t deviceProperties;
+    CHECK_HIP_ERROR(hipGetDeviceProperties(&deviceProperties, deviceId));
+    return ArchName<hipDeviceProp_t>{}(deviceProperties);
+}
+
+void checkArgs(Arguments& arg, bool yaml=false)
+{
+    if(arg.reinit_c==0 && storeOutputData)
+        arg.reinit_c = 1;
+
+    static const char* fp16AltImplEnvStr = std::getenv("ROCBLAS_INTERNAL_FP16_ALT_IMPL");
+    static const int   fp16AltImplEnv
+        = (fp16AltImplEnvStr == NULL ? -1 : (std::atoi(fp16AltImplEnvStr) == 0 ? 0 : 1));
+    if(fp16AltImplEnv != -1)
+    {
+        if(fp16AltImplEnv == 0)
+            flags &= ~rocblas_gemm_flags_fp16_alt_impl;
+        else
+            flags |= rocblas_gemm_flags_fp16_alt_impl;
+    }
+
+    static const char* fp16AltImplRoundEnvStr = std::getenv("ROCBLAS_INTERNAL_FP16_ALT_IMPL_RNZ");
+    static const int   fp16AltImplRoundEnv
+        = (fp16AltImplRoundEnvStr == NULL ? -1 : (std::atoi(fp16AltImplRoundEnvStr) == 0 ? 0 : 1));
+    if(fp16AltImplRoundEnv != -1)
+    {
+        if(fp16AltImplRoundEnv == 0)
+            flags &= ~rocblas_gemm_flags_fp16_alt_impl_rnz;
+        else
+            flags |= rocblas_gemm_flags_fp16_alt_impl_rnz;
+    }
+
+    if(rocblas_internal_get_arch_name() != "gfx90a")
+    {
+        flags &= ~rocblas_gemm_flags_fp16_alt_impl;
+        flags &= ~rocblas_gemm_flags_fp16_alt_impl_rnz;
+    }
+
+    arg.flags = rocblas_gemm_flags(flags);
+
+    std::transform(precision.begin(), precision.end(), precision.begin(), ::tolower);
+    auto prec = string2rocblas_datatype(precision);
+
+    if(prec == static_cast<rocblas_datatype>(-1) && !yaml)
+        throw std::invalid_argument("Invalid value for --precision " + precision);
+
+    if(!yaml)
+    {
+        arg.a_type = a_type == "" ? prec : string2rocblas_datatype(a_type);
+        arg.b_type = b_type == "" ? prec : string2rocblas_datatype(b_type);
+        arg.c_type = c_type == "" ? prec : string2rocblas_datatype(c_type);
+        arg.d_type = d_type == "" ? prec : string2rocblas_datatype(d_type);
+        arg.compute_type = compute_type == "" ? prec : string2rocblas_datatype(compute_type);
+        arg.initialization = string2rocblas_initialization(initialization);
+    }
+    else
+    {
+        function = arg.function;
+        a_type = rocblas_datatype2string(arg.a_type);
+        b_type = rocblas_datatype2string(arg.b_type);
+        c_type = rocblas_datatype2string(arg.c_type);
+        d_type = rocblas_datatype2string(arg.d_type);
+        compute_type = rocblas_datatype2string(arg.compute_type);
+    }
+
+    if(arg.a_type == static_cast<rocblas_datatype>(-1))
+        throw std::invalid_argument("Invalid value for --a_type " + a_type);
+    if(arg.b_type == static_cast<rocblas_datatype>(-1))
+        throw std::invalid_argument("Invalid value for --b_type " + b_type);
+    if(arg.c_type == static_cast<rocblas_datatype>(-1))
+        throw std::invalid_argument("Invalid value for --c_type " + c_type);
+    if(arg.d_type == static_cast<rocblas_datatype>(-1))
+        throw std::invalid_argument("Invalid value for --d_type " + d_type);
+    if(arg.compute_type == static_cast<rocblas_datatype>(-1))
+        throw std::invalid_argument("Invalid value for --compute_type " + compute_type);
+    if(arg.initialization == static_cast<rocblas_initialization>(-1))
+        throw std::invalid_argument("Invalid value for --initialization " + initialization);
+
+    if(arg.M < 0)
+        throw std::invalid_argument("Invalid value for -m " + std::to_string(arg.M));
+    if(arg.N < 0)
+        throw std::invalid_argument("Invalid value for -n " + std::to_string(arg.N));
+    if(arg.K < 0)
+        throw std::invalid_argument("Invalid value for -k " + std::to_string(arg.K));
+
+    if(arg.initialization
+       == rocblas_initialization_file) //check for files if initialization is file
+    {
+        if(!std::ifstream(a_file))
+            throw std::invalid_argument("Invalid value for --a_file " + a_file);
+        if(!std::ifstream(b_file))
+            throw std::invalid_argument("Invalid value for --b_file " + b_file);
+        if(!std::ifstream(c_file))
+            throw std::invalid_argument("Invalid value for --c_file " + c_file);
+    }
+    else if(arg.initialization == rocblas_initialization_const && std::isnan(arg.initVal))
+    {
+        throw std::invalid_argument("Invalid value for --initVal " + std::to_string(arg.initVal));
+    }
+
+    if(storeInitData)
+    {
+        if(arg.initialization == rocblas_initialization_file)
+        {
+            storeInitData = 0; //Do not store if loading from file
+        }
+        else
+        {
+            if(a_file.empty())
+                throw std::invalid_argument("Invalid value for --a_file " + a_file);
+            if(b_file.empty())
+                throw std::invalid_argument("Invalid value for --b_file " + b_file);
+            if(c_file.empty())
+                throw std::invalid_argument("Invalid value for --c_file " + c_file);
+        }
+    }
+
+    if(storeOutputData)
+    {
+        if(o_file.empty())
+            throw std::invalid_argument("Invalid value for --o_file " + o_file);
+    }
+
+    // Device Query
+    static rocblas_int device_count = query_device_property();
+
+    if(device_count <= device_id || device_count < multi_device || (multi_device>1 && device_id))
+        throw std::invalid_argument("Invalid Device ID");
+
+    if(multi_device>1 && arg.time_each_iter)
+        throw std::invalid_argument("Cannot combine multi_device and time_each_iter");
+
+    if(multi_device > 1)
+    {
+        perfBarrier.init(multi_device);
+        memBarrier.init(multi_device-1);
+        memBarrier2.init(multi_device-1);
+    }
+    else
+    {
+        set_device(device_id);
+    }
+}
+
 void readArgs(int argc, char* argv[], Arguments& arg)
 {
     boost::program_options::options_description desc("rocblas-bench command line options");
@@ -3612,23 +4105,23 @@ void readArgs(int argc, char* argv[], Arguments& arg)
         "Options: s,d,f16_r,bf16_r,f32_r,f64_r")
 
     ("a_type",
-        po::value<std::string>(&a_type), "Precision of matrix A. "
+        po::value<std::string>(&a_type)->default_value("f32_r"), "Precision of matrix A. "
         "Options: s,d,f32_r,f64_r")
 
     ("b_type",
-        po::value<std::string>(&b_type), "Precision of matrix B. "
+        po::value<std::string>(&b_type)->default_value("f32_r"), "Precision of matrix B. "
         "Options: s,d,f32_r,f64_r")
 
     ("c_type",
-        po::value<std::string>(&c_type), "Precision of matrix C. "
+        po::value<std::string>(&c_type)->default_value("f32_r"), "Precision of matrix C. "
         "Options: s,d,f32_r,f64_r")
 
     ("d_type",
-        po::value<std::string>(&d_type), "Precision of matrix D. "
+        po::value<std::string>(&d_type)->default_value("f32_r"), "Precision of matrix D. "
         "Options: s,d,f32_r,f64_r")
 
     ("compute_type",
-        po::value<std::string>(&compute_type), "Precision of computation. "
+        po::value<std::string>(&compute_type)->default_value("f32_r"), "Precision of computation. "
         "Options: s,d,b16_r,f32_r,f64_r")
 
     ("initialization",
@@ -3710,6 +4203,30 @@ void readArgs(int argc, char* argv[], Arguments& arg)
         "Will use this timing to calculate performance when enabled.\n"
          "Options: 0 = No, 1 = Yes (default: No)")
 
+    ("flush_batch_count",
+        po::value<uint64_t>(&arg.flush_batch_count)->default_value(1),
+        "number of copies of arrays to allocate for cache flushing in timing code. Functions"
+        " are called iters times in a timing loop. If the problem memory footprint is small"
+        " enough, then arrays will be cached. flush_batch_count can be used to prevent caching."
+        " For example, for sgemm with transA=transB=N:"
+        " problem_memory_footprint = (m*k + k*n + m*n) * sizeof(float)."
+        " To flush arrays before reuse set:"
+        " flush_batch_count >= 1 + cache_size / problem_memory_footprint"
+        " Note that in the calculation of flush_batch_count any padding from leading"
+        " dimensions is not loaded to cache and not included in the problem_memory_footprint."
+        " If you specify flush_batch_count you cannot also specify flush_memory_size")
+
+    ("flush_memory_size",
+        po::value<uint64_t>(&arg.flush_memory_size)->default_value(0),
+        "bytes of memory that will be occupied by arrays. Used only in timing code for cache flushing. Set to greater than"
+        " cache size so arrays are flushed from cache before they are reused. When the size of arrays (the problem_memory_footprint)"
+        " is smaller than flush_memory_size, then flush_batch_count copies of arrays are allocated where:"
+        " flush_batch_count = flush_memory_size / problem_memory_footprint."
+        " For sgemm with transA=transB=N"
+        " problem_memory_footprint = (m*k + k*n + m*n) * sizeof(float). Note that any padding from leading"
+        " dimensions is not loaded to cache and not included in the problem_memory_footprint."
+        " If you specify flush_memory_size you cannot also specify flush_batch_count")
+
     ("algo",
         po::value<uint32_t>(&arg.algo)->default_value(0),
         "extended precision gemm algorithm")
@@ -3719,7 +4236,7 @@ void readArgs(int argc, char* argv[], Arguments& arg)
         "extended precision gemm solution index")
 
     ("flags",
-        po::value<uint32_t>(&arg.flags)->default_value(10),
+        po::value<int32_t>(&flags)->default_value(rocblas_gemm_flags_none),
         "extended precision gemm flags")
 
     ("device",
@@ -3748,110 +4265,7 @@ void readArgs(int argc, char* argv[], Arguments& arg)
         exit(1);
     }
 
-    if(vm["reinit_c"].defaulted() && storeOutputData)
-        arg.reinit_c = 1;
-
-    std::transform(precision.begin(), precision.end(), precision.begin(), ::tolower);
-    auto prec = string2rocblas_datatype(precision);
-    if(prec == static_cast<rocblas_datatype>(-1))
-        throw std::invalid_argument("Invalid value for --precision " + precision);
-
-    if(a_type == "")
-        a_type = precision;
-    arg.a_type = string2rocblas_datatype(a_type);
-    if(arg.a_type == static_cast<rocblas_datatype>(-1))
-        throw std::invalid_argument("Invalid value for --a_type " + a_type);
-
-    if(b_type == "")
-        b_type = precision;
-    arg.b_type = string2rocblas_datatype(b_type);
-    if(arg.b_type == static_cast<rocblas_datatype>(-1))
-        throw std::invalid_argument("Invalid value for --b_type " + b_type);
-
-    if(c_type == "")
-        c_type = precision;
-    arg.c_type = string2rocblas_datatype(c_type);
-    if(arg.c_type == static_cast<rocblas_datatype>(-1))
-        throw std::invalid_argument("Invalid value for --c_type " + c_type);
-
-    if(d_type == "")
-        d_type = precision;
-    arg.d_type = string2rocblas_datatype(d_type);
-    if(arg.d_type == static_cast<rocblas_datatype>(-1))
-        throw std::invalid_argument("Invalid value for --d_type " + d_type);
-
-    if(compute_type == "")
-        compute_type = precision;
-    arg.compute_type = string2rocblas_datatype(compute_type);
-    if(arg.compute_type == static_cast<rocblas_datatype>(-1))
-        throw std::invalid_argument("Invalid value for --compute_type " + compute_type);
-
-    arg.initialization = string2rocblas_initialization(initialization);
-    if(arg.initialization == static_cast<rocblas_initialization>(-1))
-        throw std::invalid_argument("Invalid value for --initialization " + initialization);
-
-    if(arg.M < 0)
-        throw std::invalid_argument("Invalid value for -m " + std::to_string(arg.M));
-    if(arg.N < 0)
-        throw std::invalid_argument("Invalid value for -n " + std::to_string(arg.N));
-    if(arg.K < 0)
-        throw std::invalid_argument("Invalid value for -k " + std::to_string(arg.K));
-
-    if(arg.initialization
-       == rocblas_initialization_file) //check for files if initialization is file
-    {
-        if(!std::ifstream(a_file))
-            throw std::invalid_argument("Invalid value for --a_file " + a_file);
-        if(!std::ifstream(b_file))
-            throw std::invalid_argument("Invalid value for --b_file " + b_file);
-        if(!std::ifstream(c_file))
-            throw std::invalid_argument("Invalid value for --c_file " + c_file);
-    }
-    else if(arg.initialization == rocblas_initialization_const && std::isnan(arg.initVal))
-    {
-        throw std::invalid_argument("Invalid value for --initVal " + std::to_string(arg.initVal));
-    }
-
-    if(storeInitData)
-    {
-        if(arg.initialization == rocblas_initialization_file)
-        {
-            storeInitData = 0; //Do not store if loading from file
-        }
-        else
-        {
-            if(a_file.empty())
-                throw std::invalid_argument("Invalid value for --a_file " + a_file);
-            if(b_file.empty())
-                throw std::invalid_argument("Invalid value for --b_file " + b_file);
-            if(c_file.empty())
-                throw std::invalid_argument("Invalid value for --c_file " + c_file);
-        }
-    }
-
-    if(storeOutputData)
-    {
-        if(o_file.empty())
-            throw std::invalid_argument("Invalid value for --o_file " + o_file);
-    }
-
-    // Device Query
-    rocblas_int device_count = query_device_property();
-
-    if(device_count <= device_id || device_count < multi_device || (multi_device>1 && device_id))
-        throw std::invalid_argument("Invalid Device ID");
-
-    if(multi_device>1 && arg.time_each_iter)
-        throw std::invalid_argument("Cannot combine multi_device and time_each_iter");
-
-    if(multi_device > 1)
-    {
-        perfBarrier.init(multi_device);
-        memBarrier.init(multi_device-1);
-        memBarrier2.init(multi_device-1);
-    }
-    else
-        set_device(device_id);
+    checkArgs(arg);
 }
 
 template <typename Ti, typename To = Ti, typename Ui, typename Uo>
@@ -4469,5 +4883,277 @@ inline void rocblas_init_matrix(host_matrix<T>&           hA,
     }
 
 }
+
+inline void print_memory_size(size_t memory_size)
+{
+    if(memory_size < 1024)
+    {
+        std::cout << std::setprecision(0) << memory_size << " Bytes";
+    }
+    else if(memory_size < 1048576)
+    {
+        std::cout << std::setprecision(3) << float(memory_size) / 1024.0f << " KB";
+    }
+    else if(memory_size < 1073741824)
+    {
+        std::cout << std::setprecision(6) << float(memory_size) / 1048576.0f << " MB";
+    }
+    else
+    {
+        std::cout << std::setprecision(9) << float(memory_size) / 1073741824.0f << " GB";
+    }
+}
+
+size_t calculate_flush_batch_count(size_t arg_flush_batch_count,
+                                   size_t arg_flush_memory_size,
+                                   size_t cached_size)
+{
+    size_t default_arg_flush_batch_count = 1;
+    size_t default_arg_flush_memory_size = 0;
+    size_t flush_batch_count             = default_arg_flush_batch_count;
+
+    if(arg_flush_batch_count != default_arg_flush_batch_count
+       && arg_flush_memory_size != default_arg_flush_memory_size)
+    {
+        rocblas_cout << "GemmDriver WARNING: cannot set both flush_batch_count and flush_memory_size"
+                     << std::endl;
+        rocblas_cout << "GemmDriver WARNING: using flush_batch_count = " << arg_flush_batch_count
+                     << std::endl;
+        flush_batch_count = arg_flush_batch_count;
+    }
+    else if(arg_flush_batch_count != default_arg_flush_batch_count)
+    {
+        flush_batch_count = arg_flush_batch_count;
+        rocblas_cout << "flush_memory_size = ";
+        print_memory_size(flush_batch_count * cached_size);
+        rocblas_cout << std::endl;
+    }
+    else if(arg_flush_memory_size != default_arg_flush_memory_size)
+    {
+        flush_batch_count = 1 + (arg_flush_memory_size - 1) / cached_size;
+        rocblas_cout << "flush_batch_count = " << flush_batch_count << std::endl;
+    }
+    return flush_batch_count;
+}
+
+// template <typename data_type>
+// void* setup_shared_matrix(
+//     size_t row, size_t col, size_t ld, size_t stride, size_t batch_count, Arguments arg)
+// {
+//     size_t a_b_c_cached_size = row * col * sizeof(data_type);
+
+//     size_t flush_batch_count = calculate_flush_batch_count(
+//         arg.flush_batch_count, arg.flush_memory_size, a_b_c_cached_size);
+
+//     rocblas_cout << "row: " << row << std::endl;
+//     rocblas_cout << "col: " << col << std::endl;
+//     rocblas_cout << "ld: " << ld << std::endl;
+//     rocblas_cout << "max(ld * row, max(ld * col, stride)): " << std::max(ld * row, std::max(ld * col, stride)) << std::endl;
+//     rocblas_cout << "max(1, flush_batch_count): " << std::max((size_t)1, flush_batch_count) << std::endl;
+
+//     device_strided_batch_matrix<data_type> dA(row,
+//                                               col,
+//                                               ld,
+//                                               std::max(ld * row, std::max(ld * col, stride)),
+//                                               std::max((size_t)10, flush_batch_count),
+//                                               false,
+//                                               false);
+//     host_matrix<data_type>                 hA(row, col, ld);
+//     CHECK_HIP_ERROR(hA.memcheck());
+//     rocblas_init_matrix<data_type>(
+//         hA, arg, rocblas_client_alpha_sets_nan, rocblas_client_general_matrix, true);
+//     CHECK_HIP_ERROR(dA.broadcast_one_matrix_from(hA));
+//     return dA.data();
+// }
+
+// void* setup_shared_matrix(size_t           row,
+//                           size_t           col,
+//                           size_t           ld,
+//                           size_t           stride,
+//                           size_t           batch_count,
+//                           rocblas_datatype type,
+//                           Arguments        arg)
+// {
+//     switch(type)
+//     {
+//     case rocblas_datatype_f16_r:
+//     {
+//         return setup_shared_matrix<rocblas_half>(row, col, ld, stride, batch_count, arg);
+//     }
+//     case rocblas_datatype_f32_r:
+//     {
+//         return setup_shared_matrix<rocblas_float>(row, col, ld, stride, batch_count, arg);
+//     }
+//     case rocblas_datatype_f8_r:
+//     {
+//         return setup_shared_matrix<rocblas_f8>(row, col, ld, stride, batch_count, arg);
+//     }
+//     case rocblas_datatype_bf8_r:
+//     {
+//         return setup_shared_matrix<rocblas_bf8>(row, col, ld, stride, batch_count, arg);
+//     }
+//     case rocblas_datatype_f64_r:
+//     {
+//         return setup_shared_matrix<rocblas_double>(row, col, ld, stride, batch_count, arg);
+//     }
+//     case rocblas_datatype_f32_c:
+//     {
+//         return setup_shared_matrix<rocblas_float_complex>(row, col, ld, stride, batch_count, arg);
+//     }
+//     case rocblas_datatype_f64_c:
+//     {
+//         return setup_shared_matrix<rocblas_double_complex>(row, col, ld, stride, batch_count, arg);
+//     }
+//     case rocblas_datatype_i8_r:
+//     {
+//         return setup_shared_matrix<int8_t>(row, col, ld, stride, batch_count, arg);
+//     }
+//     case rocblas_datatype_u8_r:
+//     {
+//         return setup_shared_matrix<uint8_t>(row, col, ld, stride, batch_count, arg);
+//     }
+//     case rocblas_datatype_i32_r:
+//     {
+//         return setup_shared_matrix<int32_t>(row, col, ld, stride, batch_count, arg);
+//     }
+//     case rocblas_datatype_u32_r:
+//     {
+//         return setup_shared_matrix<uint32_t>(row, col, ld, stride, batch_count, arg);
+//     }
+//     case rocblas_datatype_bf16_r:
+//     {
+//         return setup_shared_matrix<rocblas_bfloat16>(row, col, ld, stride, batch_count, arg);
+//     }
+//     default:
+//         return nullptr;
+//     }
+// }
+
+// void setup_shared_memory(std::vector<Arguments>& args)
+// {
+//     Arguments maximal_arg;
+//     if(args.empty())
+//     {
+//         return;
+//     }
+//     else
+//     {
+//         maximal_arg = args.front();
+//     }
+//     size_t maxA_m = maximal_arg.M, maxA_n = maximal_arg.K, maxA_ld = maximal_arg.lda;
+//     size_t maxB_m = maximal_arg.K, maxB_n = maximal_arg.N, maxB_ld = maximal_arg.ldb;
+//     size_t maxC_m = maximal_arg.M, maxC_n = maximal_arg.N, maxC_ld = maximal_arg.ldc;
+//     size_t maxD_m = maximal_arg.M, maxD_n = maximal_arg.N, maxD_ld = maximal_arg.ldd;
+//     // Check if shared memory can be used
+//     for(Arguments arg : args)
+//     {
+//         if(arg.M * arg.K > maxA_m * maxA_n)
+//         {
+//             maxA_m  = arg.transA == 'N' ? arg.M : arg.K;
+//             maxA_n  = arg.transA == 'N' ? arg.K : arg.M;
+//             int64_t min_lda = arg.transA == 'N' ? arg.M : arg.K;
+//             maxA_ld = arg.lda;
+//             if(maxA_ld < min_lda) maxA_ld = min_lda;
+//             maximal_arg.stride_a = arg.stride_a;
+//         }
+//         if(arg.N * arg.K > maxB_m * maxB_n)
+//         {
+//             maxB_m  = arg.transB == 'N' ? arg.K : arg.N;
+//             maxB_n  = arg.transB == 'N' ? arg.N : arg.K;
+//             int64_t min_ldb = arg.transB == 'N' ? arg.K : arg.N;
+//             maxB_ld = arg.ldb;
+//             if(maxB_ld < min_ldb) maxB_ld = min_ldb;
+//             maximal_arg.stride_b = arg.stride_b;
+//         }
+//         if(arg.M * arg.N > maxC_m * maxC_n)
+//         {
+//             maxC_m  = arg.M;
+//             maxC_n  = arg.N;
+//             int64_t min_ldc = arg.M;
+//             maxC_ld = arg.ldc;
+//             if(maxC_ld < min_ldc) maxC_ld = min_ldc;
+//             maximal_arg.stride_c = arg.stride_c;
+//         }
+//         if(arg.M * arg.N > maxD_m * maxD_n)
+//         {
+//             maxD_m  = arg.M;
+//             maxD_n  = arg.N;
+//             int64_t min_ldd = arg.M;
+//             maxD_ld = arg.ldd;
+//             if(maxD_ld < min_ldd) maxD_ld = min_ldd;
+//             maximal_arg.stride_d = arg.stride_d;
+//         }
+//         if(arg.M > maximal_arg.M)
+//             maximal_arg.M = arg.M;
+//         if(arg.N > maximal_arg.N)
+//             maximal_arg.N = arg.N;
+//         if(arg.K > maximal_arg.K)
+//             maximal_arg.K = arg.K;
+//         if(arg.lda > maximal_arg.lda)
+//             maximal_arg.lda = arg.lda;
+//         if(arg.ldb > maximal_arg.ldb)
+//             maximal_arg.ldb = arg.ldb;
+//         if(arg.ldc > maximal_arg.ldc)
+//             maximal_arg.ldc = arg.ldc;
+//         if(arg.ldd > maximal_arg.ldd)
+//             maximal_arg.ldd = arg.ldd;
+//         if(arg.batch_count > maximal_arg.batch_count)
+//             maximal_arg.batch_count = arg.batch_count;
+//         if(arg.flush_memory_size > maximal_arg.flush_memory_size)
+//             maximal_arg.flush_memory_size = arg.flush_memory_size;
+//         //if(arg.stride_a > maximal_arg.stride_a)
+//         //    maximal_arg.stride_a = arg.stride_a;
+//         //if(arg.stride_b > maximal_arg.stride_b)
+//         //    maximal_arg.stride_b = arg.stride_b;
+//         //if(arg.stride_c > maximal_arg.stride_c)
+//         //    maximal_arg.stride_c = arg.stride_c;
+//         //if(arg.stride_d > maximal_arg.stride_d)
+//         //    maximal_arg.stride_d = arg.stride_d;
+//         if(arg.a_type != maximal_arg.a_type || arg.b_type != maximal_arg.b_type
+//            || arg.c_type != maximal_arg.c_type || arg.d_type != maximal_arg.d_type
+//            || !strcmp(arg.function, "rocblas_gemm_ex")
+//            || arg.initialization != maximal_arg.initialization)
+//         {
+//             return;
+//         }
+//     }
+
+//     void* dA = setup_shared_matrix(maxA_m,
+//                                    maxA_n,
+//                                    maxA_ld,
+//                                    maximal_arg.stride_a,
+//                                    maximal_arg.batch_count,
+//                                    maximal_arg.a_type,
+//                                    maximal_arg);
+//     void* dB = setup_shared_matrix(maxB_m,
+//                                    maxB_n,
+//                                    maxB_ld,
+//                                    maximal_arg.stride_b,
+//                                    maximal_arg.batch_count,
+//                                    maximal_arg.b_type,
+//                                    maximal_arg);
+//     void* dC = setup_shared_matrix(maxC_m,
+//                                    maxC_n,
+//                                    maxC_ld,
+//                                    maximal_arg.stride_c,
+//                                    maximal_arg.batch_count,
+//                                    maximal_arg.c_type,
+//                                    maximal_arg);
+//     void* dD = setup_shared_matrix(maxD_m,
+//                                    maxD_n,
+//                                    maxD_ld,
+//                                    maximal_arg.stride_d,
+//                                    maximal_arg.batch_count,
+//                                    maximal_arg.d_type,
+//                                    maximal_arg);
+
+//     for(Arguments& arg : args)
+//     {
+//         arg.dA = dA;
+//         arg.dB = dB;
+//         arg.dC = dC;
+//         arg.dD = dD;
+//     }
+// }
 
 #endif /* _UTILITY_ */
